@@ -155,6 +155,7 @@ def build_repo_graph(
     log: LogFn | None = None,
     timings: PhaseTimings | None = None,
     read_only: bool = False,
+    seed_edges: Any | None = None,
 ) -> tuple[list, dict[str, bytes], Any, Any, int]:
     """Traverse + parse the repo and build the graph (+ framework-aware edges).
 
@@ -170,6 +171,13 @@ def build_repo_graph(
     swallowed silently. ``source_map`` is populated only when ``collect_sources``
     is set; every path that persists the graph sets it, since the framework-edge
 pass reads the sources.
+
+    ``seed_edges`` (the persisted import/call/heritage edges) asks for a patch
+    instead of a rebuild: when the only files that changed are ones whose
+    cross-file surface is untouched (:func:`~.surface.plan_patch`), the graph is
+    seeded with those edges and only the changed files are re-resolved. Any
+    other change falls back to the full build, and the decision is left on
+    ``graph_builder.patch_plan``.
 
     ``timings`` is the run's shared :class:`PhaseTimings` table; each step
     below records into it under a ``rebuild.*`` name. ``None`` records nothing.
@@ -258,6 +266,20 @@ pass reads the sources.
     )
     skipped += unparsed
 
+    from .surface import PatchPlan, plan_patch
+
+    patch_plan = PatchPlan(False, reason="not requested")
+    if seed_edges is not None:
+        changed = {
+            fi.path: merged[idx] for idx, (fi, _source), _hash in to_parse if idx in merged
+        }
+        patch_plan = plan_patch(
+            parse_cache=parse_cache,
+            current_paths=[pf.file_info.path for pf in parsed_files],
+            changed=changed,
+        )
+    graph_builder.patch_plan = patch_plan
+
     # TS/JS path aliases (``@/components/...``) resolve only when the
     # tsconfig resolver is attached before build(); without it the alias
     # targets read as external nodes and every aliased file looks
@@ -273,7 +295,17 @@ pass reads the sources.
     )
     graph_builder.set_source_map(source_map)
     graph_builder.set_pytest_roots(traverser.pytest_roots)
-    graph_builder.build()
+    if patch_plan.eligible:
+        seeded = graph_builder.seed_resolved_edges(seed_edges)
+        log(
+            f"Patching the graph: re-resolving {len(patch_plan.scope)} file(s), "
+            f"reusing {seeded:,} edges"
+        )
+        graph_builder.build(scope=patch_plan.scope)
+    else:
+        if seed_edges is not None:
+            log(f"[yellow]Full graph rebuild: {patch_plan.reason}[/yellow]")
+        graph_builder.build()
     if timings is not None:
         timings.stop("rebuild.graph")
     if parse_cache is not None:
@@ -302,9 +334,14 @@ async def rebuild_graph_and_git(
     git_summary_sink: list[Any] | None = None,
     log: LogFn | None = None,
     timings: PhaseTimings | None = None,
+    patch_graph: bool = False,
 ) -> tuple[list, dict[str, bytes], Any, Any, int, dict[str, dict]]:
     """Re-traverse + parse the repo, rebuild the graph (+ framework edges), and
     re-index git metadata for the changed files.
+
+    ``patch_graph`` tries to reuse the persisted edges and re-resolve only the
+    changed files; see :func:`build_repo_graph`. It falls back to the full
+    rebuild whenever the change is not provably local.
 
     ``timings`` records the whole step as ``rebuild`` plus one ``rebuild.*``
     row per sub-step, so a slow update names the stage that made it slow.
@@ -339,6 +376,15 @@ async def rebuild_graph_and_git(
     if timings is not None:
         timings.start("rebuild")
 
+    seed_edges = None
+    if patch_graph:
+        from .graph_seed import load_seed_edges
+
+        with timed(timings, "rebuild.seed_load"):
+            seed_edges = await load_seed_edges(repo_path)
+        if seed_edges is None:
+            log("[yellow]Full graph rebuild: no persisted edges to reuse[/yellow]")
+
     # Full re-ingest for graph (needed for cascade analysis)
     parsed_files, source_map, graph_builder, repo_structure, file_count = build_repo_graph(
         repo_path,
@@ -348,6 +394,7 @@ async def rebuild_graph_and_git(
         include_nested_repos=include_nested_repos,
         log=log,
         timings=timings,
+        seed_edges=seed_edges,
     )
 
     # Re-index git metadata for changed files

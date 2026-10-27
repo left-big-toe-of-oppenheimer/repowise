@@ -8,6 +8,7 @@ file under the project's 400-line ceiling.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -34,6 +35,7 @@ from ._edges import EdgesMixin
 from ._metrics import MetricsMixin
 from ._rehydrate import RehydrateMixin
 from ._resolvers import ResolveMixin
+from ._scoped import ScopedBuildMixin
 from ._serialize import SerializeMixin
 from ._stem import build_stem_map
 
@@ -70,7 +72,9 @@ def _merge_load_kind(data: dict[str, Any], imp: Import) -> None:
         data.pop("deferred", None)
 
 
-class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, RehydrateMixin):
+class GraphBuilder(
+    MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, RehydrateMixin, ScopedBuildMixin
+):
     """Build a dependency graph from a collection of ParsedFile objects.
 
     Usage::
@@ -391,26 +395,40 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
                 if sym.id in self._graph:
                     self._graph.nodes[sym.id]["qualified_name"] = sym.qualified_name
 
-    def build(self, progress: Any | None = None) -> nx.DiGraph:
+    def build(
+        self, progress: Any | None = None, *, scope: Collection[str] | None = None
+    ) -> nx.DiGraph:
         """Resolve imports and calls, add edges. Returns the finalized graph.
 
         *progress* is an optional ``ProgressCallback`` (duck-typed). When
         provided, sub-phase events ``graph.imports`` / ``graph.heritage`` /
         ``graph.calls`` are emitted so the CLI can surface per-file progress
         instead of a single opaque "0/1" bar over the whole build.
+
+        *scope* turns this into a patch of an already-resolved graph: the graph
+        must have been seeded with every other file's resolved edges
+        (:meth:`seed_resolved_edges`), and only the files named here have their
+        outgoing import, call and reference edges re-resolved. It is only
+        correct when the edit left every scoped file's cross-file surface
+        unchanged (see ``pipeline.incremental.surface``); the caller owns that
+        check. ``None`` is the full build.
         """
         self._invalidate_metric_caches()
         self._qualify_python_symbols()
         # Apex names are case-insensitive; every resolver keys on the declared spelling.
         spell_apex_names(self._parsed_files.values())
 
-        # Clear import/call edges but keep structural edges (defines, has_method)
-        edges_to_remove = [
-            (u, v)
-            for u, v, d in self._graph.edges(data=True)
-            if d.get("edge_type") not in ("defines", "has_method")
-        ]
-        self._graph.remove_edges_from(edges_to_remove)
+        scope_set: frozenset[str] | None = None if scope is None else frozenset(scope)
+        if scope_set is None:
+            # Clear import/call edges but keep structural edges (defines, has_method)
+            edges_to_remove = [
+                (u, v)
+                for u, v, d in self._graph.edges(data=True)
+                if d.get("edge_type") not in ("defines", "has_method")
+            ]
+            self._graph.remove_edges_from(edges_to_remove)
+        else:
+            self._clear_scope_edges(scope_set)
 
         # Build lookup tables for import resolution
         path_set = set(self._parsed_files.keys())
@@ -457,6 +475,10 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
 
         # --- Phase 1: Resolve file-level imports ---
         import_targets: dict[str, set[str]] = {}  # file → set of imported files
+        if scope_set is not None:
+            # Files outside the scope keep the edges the seed carried; their
+            # import sets are read back off those instead of being resolved.
+            self._seed_import_targets(import_targets, scope_set)
 
         # Per-language import-resolution timing — surfaces which language is
         # actually dominating the import loop on multi-language repos
@@ -465,9 +487,10 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
 
         lang_import_time: dict[str, float] = {}
 
+        import_items = self._scoped_items(scope_set)
         if progress:
-            progress.on_phase_start("graph.imports", len(self._parsed_files))
-        for path, parsed in self._parsed_files.items():
+            progress.on_phase_start("graph.imports", len(import_items))
+        for path, parsed in import_items:
             _lang = parsed.file_info.language
             _t0 = _t.monotonic()
             file_imports: set[str] = set()
@@ -598,7 +621,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         self._resolve_fsharp_compile_order(ctx, progress=progress)
 
         # --- Phase 2: Resolve heritage (extends/implements) ---
-        self._resolve_heritage(import_targets, progress=progress)
+        self._resolve_heritage(import_targets, progress=progress, scope=scope_set)
 
         # --- Phase 2b: Resolve Go structural interface satisfaction ---
         # Go has no `implements` keyword; connect concrete types to the
@@ -607,7 +630,7 @@ class GraphBuilder(MetricsMixin, ResolveMixin, EdgesMixin, SerializeMixin, Rehyd
         self._resolve_go_interface_satisfaction(progress=progress)
 
         # --- Phase 3: Resolve symbol-level calls ---
-        self._resolve_calls(import_targets, progress=progress)
+        self._resolve_calls(import_targets, progress=progress, scope=scope_set)
 
         # --- Salesforce objects and fields named by Apex and lookup fields ---
         self._resolve_salesforce_schema()

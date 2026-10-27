@@ -54,6 +54,7 @@ class ResolveMixin:
         self,
         import_targets: dict[str, set[str]],
         progress: Any | None = None,
+        scope: frozenset[str] | None = None,
     ) -> None:
         """Resolve heritage relations and add EXTENDS/IMPLEMENTS edges."""
         from ..heritage_resolver import HeritageResolver
@@ -63,9 +64,7 @@ class ResolveMixin:
         )
         total_resolved = 0
 
-        files_with_heritage = [
-            (p, pf) for p, pf in self._parsed_files.items() if pf.heritage
-        ]
+        files_with_heritage = [(p, pf) for p, pf in self._scoped_items(scope) if pf.heritage]
         if progress:
             progress.on_phase_start("graph.heritage", len(files_with_heritage))
         for path, parsed in files_with_heritage:
@@ -615,6 +614,7 @@ class ResolveMixin:
         self,
         import_targets: dict[str, set[str]],
         progress: Any | None = None,
+        scope: frozenset[str] | None = None,
     ) -> None:
         """Run three-tier call resolution and add CALLS edges to the graph."""
         from ..call_resolver import CallResolver
@@ -639,9 +639,7 @@ class ResolveMixin:
         total_resolved = 0
         total_referenced = 0
 
-        files_with_calls = [
-            (p, pf) for p, pf in self._parsed_files.items() if pf.calls
-        ]
+        files_with_calls = [(p, pf) for p, pf in self._scoped_items(scope) if pf.calls]
         if progress:
             progress.on_phase_start("graph.calls", len(files_with_calls))
         for path, parsed in files_with_calls:
@@ -714,10 +712,10 @@ class ResolveMixin:
             non_invoking=total_referenced,
         )
 
-        self._add_reference_edges(resolver)
+        self._add_reference_edges(resolver, scope)
         self._add_registration_edges(resolver)
 
-    def _add_reference_edges(self, resolver: Any) -> None:
+    def _add_reference_edges(self, resolver: Any, scope: frozenset[str] | None = None) -> None:
         """Emit ``references`` edges for functions named but never called.
 
         Shares the ``CallResolver`` built for calls: resolving "which symbol
@@ -751,7 +749,7 @@ class ResolveMixin:
         earlier tiers cover.
         """
         total = 0
-        for path, parsed in self._parsed_files.items():
+        for path, parsed in self._scoped_items(scope):
             if not parsed.references:
                 continue
             bare = [r for r in parsed.references if not r.receiver_name]
