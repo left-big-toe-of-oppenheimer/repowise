@@ -665,3 +665,44 @@ def test_supported_language_body_edit_matches_full_build(
     assert patched.patch_plan.eligible, patched.patch_plan.reason
     assert patched.patch_plan.scope == (target,)
     _assert_equals_full(tree, patched, tmp_path / f"{language}-oracle")
+
+
+def test_ruby_spec_mirror_edge_survives_a_body_patch(tmp_path: Path) -> None:
+    tree = tmp_path / "ruby"
+    spec_path = "spec/lib/rack/protection/base_spec.rb"
+    subject_path = "lib/rack/protection/base.rb"
+    _write(
+        tree,
+        {
+            subject_path: (
+                "module Rack\n  module Protection\n    class Base\n    end\n"
+                "  end\nend\n"
+            ),
+            spec_path: (
+                "RSpec.describe Rack::Protection::Base do\n"
+                "  value = 1\nend\n"
+            ),
+        },
+    )
+    original = build_repo_graph(tree, [], collect_sources=True)[2]
+    original_edges = _edges(original)
+    assert any(
+        source == spec_path and target == subject_path and kind == "imports"
+        for source, target, kind, *_ in original_edges
+    )
+    (tree / spec_path).write_text(
+        (tree / spec_path).read_text().replace("value = 1", "value = 2")
+    )
+
+    patched = _patched(tree, _seed_rows(original))
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert patched.patch_plan.scope == (spec_path,)
+    assert any(
+        source == spec_path
+        and target == subject_path
+        and kind == "imports"
+        and hint_source == "spec_mirror"
+        for source, target, kind, _confidence, hint_source, *_ in _edges(patched)
+    )
+    _assert_equals_full(tree, patched, tmp_path / "ruby-oracle")

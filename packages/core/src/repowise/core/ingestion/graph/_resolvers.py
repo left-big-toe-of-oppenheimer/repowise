@@ -235,7 +235,11 @@ class ResolveMixin:
                 if callable(done):
                     done(phase)
 
-    def _resolve_ruby_spec_mirrors(self, progress: Any | None = None) -> None:
+    def _resolve_ruby_spec_mirrors(
+        self,
+        progress: Any | None = None,
+        scope: frozenset[str] | None = None,
+    ) -> None:
         """Link rspec files to their subjects by the directory-mirror convention.
 
         RSpec loads ``spec_helper`` through ``.rspec`` and resolves the
@@ -248,7 +252,7 @@ class ResolveMixin:
         ruby_files = [
             p
             for p, pf in self._parsed_files.items()
-            if pf.file_info.language == "ruby"
+            if pf.file_info.language == "ruby" and (scope is None or p in scope)
         ]
         if not ruby_files:
             return

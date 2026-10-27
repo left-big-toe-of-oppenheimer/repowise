@@ -580,8 +580,7 @@ class GraphBuilder(
         # --- Ruby rspec directory-mirror edges ---
         # Spec files carry no requires (rspec wires the helper + subject
         # at runtime); the spec/ <-> lib/ mirror convention links them.
-        if scope_set is None:
-            self._resolve_ruby_spec_mirrors(progress=progress)
+        self._resolve_ruby_spec_mirrors(progress=progress, scope=scope_set)
 
         # --- C/C++ header ↔ implementation pairing ---
         # foo.h -> foo.c (same stem, same dir): consumers including the
