@@ -50,6 +50,7 @@ from .graph import (
     persist_graph_nodes,
     persist_incremental_edges,
     persist_incremental_symbols,
+    persist_scoped_graph_nodes,
     persist_symbol_analysis,
     prune_absent_graph_rows,
     stamp_edges_parser_fingerprint,

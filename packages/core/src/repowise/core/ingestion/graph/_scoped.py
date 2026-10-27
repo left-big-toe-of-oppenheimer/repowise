@@ -21,6 +21,9 @@ from typing import Any
 # Edge types the heavy per-file loops produce and a patch can therefore reuse.
 SEEDED_EDGE_TYPES = frozenset({"imports", "calls", "references", "extends", "implements"})
 
+# The structural edge a resolved call can merge its attributes into.
+CALL_MERGED_STRUCTURAL_TYPE = "has_method"
+
 # Structural edges ``add_file`` creates; a rebuild never touches them.
 _STRUCTURAL_EDGE_TYPES = frozenset({"defines", "has_method"})
 
@@ -68,11 +71,25 @@ class ScopedBuildMixin:
         graph = self._graph  # type: ignore[attr-defined]
         added = 0
         for edge in edges:
-            if edge.get("edge_type") not in SEEDED_EDGE_TYPES:
-                continue
             source, target = edge.get("source_node_id"), edge.get("target_node_id")
             if source is None or target is None:
                 continue
+            if edge.get("edge_type") == CALL_MERGED_STRUCTURAL_TYPE:
+                # A class that calls its own method shares one edge with its
+                # ``has_method`` link, and call resolution merges the call's
+                # attributes into it. The link itself comes from ``add_file``.
+                if graph.has_edge(source, target):
+                    attrs = edge_attrs_from_row(edge)
+                    attrs.pop("edge_type")
+                    graph[source][target].update(attrs)
+                continue
+            if edge.get("edge_type") not in SEEDED_EDGE_TYPES:
+                continue
+            # An endpoint no parsed file defines is an external dependency; a
+            # full build gives it these attributes when it resolves the import.
+            for node in (source, target):
+                if node not in graph:
+                    graph.add_node(node, language="external", symbol_count=0, has_error=False)
             graph.add_edge(source, target, **edge_attrs_from_row(edge))
             added += 1
         return added

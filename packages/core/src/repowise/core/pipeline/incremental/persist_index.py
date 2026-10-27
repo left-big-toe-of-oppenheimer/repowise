@@ -219,10 +219,20 @@ async def persist_nodes(ctx: IncrementalPersist) -> None:
     # existing repos. Before health, whose plan annotations read each
     # symbol's ``public_api`` from here; a failed write leaves them reading
     # the last run's flags.
-    from repowise.core.pipeline.persist import persist_graph_nodes
+    from repowise.core.pipeline.persist import persist_graph_nodes, persist_scoped_graph_nodes
 
+    plan = getattr(ctx.graph_builder, "patch_plan", None)
     with timed(ctx.timings, "persist.graph_nodes"):
-        await persist_graph_nodes(ctx.session, ctx.repo_id, ctx.graph_builder, timings=ctx.timings)
+        if plan is not None and plan.eligible:
+            # A patched graph carries no fresh centrality: write only the
+            # re-resolved nodes' structure and leave the stored metrics alone.
+            await persist_scoped_graph_nodes(
+                ctx.session, ctx.repo_id, ctx.graph_builder, plan.scope
+            )
+        else:
+            await persist_graph_nodes(
+                ctx.session, ctx.repo_id, ctx.graph_builder, timings=ctx.timings
+            )
 
 
 async def persist_health(ctx: IncrementalPersist) -> None:

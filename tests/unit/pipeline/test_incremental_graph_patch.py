@@ -51,6 +51,28 @@ public class Service extends Base {
     }
 }
 """,
+    # Two modules declare ``BuySell``. ``Order`` imports the one in ``a_mod`` while
+    # its own package holds the other, so the JVM type-reference pass only picks
+    # the right target if it still sees the resolved import of this unchanged file.
+    "a_mod/src/com/x/BuySell.java": "package com.x;\npublic class BuySell {}\n",
+    "z_mod/src/com/y/BuySell.java": "package com.y;\npublic class BuySell {}\n",
+    "z_mod/src/com/y/Order.java": """package com.y;
+
+import com.x.BuySell;
+
+public class Order {
+    private BuySell side;
+}
+""",
+    # A field initializer calls the class's own method: the call resolves onto
+    # the same class -> method pair as the structural ``has_method`` link.
+    "src/com/acme/svc/Holder.java": """package com.acme.svc;
+
+public class Holder {
+    private final String value = compute();
+    String compute() { return "x"; }
+}
+""",
     "src/com/acme/svc/Other.java": """package com.acme.svc;
 
 import com.acme.util.Util;
@@ -75,6 +97,15 @@ def _write(root: Path, files: dict[str, str]) -> None:
 
 def _seed_rows(graph_builder: Any) -> list[dict]:
     """The edges as the index persists them (``graph_edges`` columns, decoded)."""
+    return [
+        row
+        for row in _all_rows(graph_builder)
+        # The index only reads back the structural links a call resolved onto.
+        if row["edge_type"] != "has_method" or row["resolution_origin"]
+    ]
+
+
+def _all_rows(graph_builder: Any) -> list[dict]:
     return [
         {
             "source_node_id": u,

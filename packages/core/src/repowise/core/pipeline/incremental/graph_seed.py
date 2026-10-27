@@ -22,9 +22,12 @@ async def load_seed_edges(repo_path: Any) -> Iterator[dict] | None:
     Selects bare columns rather than ORM rows: a large repo has over a million
     edges, and hydrating each as an entity costs more than the patch saves.
     """
-    from sqlalchemy import select
+    from sqlalchemy import and_, or_, select
 
-    from repowise.core.ingestion.graph._scoped import SEEDED_EDGE_TYPES
+    from repowise.core.ingestion.graph._scoped import (
+        CALL_MERGED_STRUCTURAL_TYPE,
+        SEEDED_EDGE_TYPES,
+    )
     from repowise.core.persistence import create_engine, create_session_factory, get_session
     from repowise.core.persistence.database import resolve_db_url
     from repowise.core.persistence.models import GraphEdge, Repository
@@ -56,7 +59,14 @@ async def load_seed_edges(repo_path: Any) -> Iterator[dict] | None:
                         GraphEdge.deferred,
                     ).where(
                         GraphEdge.repository_id == repo_id,
-                        GraphEdge.edge_type.in_(sorted(SEEDED_EDGE_TYPES)),
+                        or_(
+                            GraphEdge.edge_type.in_(sorted(SEEDED_EDGE_TYPES)),
+                            # Only the structural links a call resolved onto.
+                            and_(
+                                GraphEdge.edge_type == CALL_MERGED_STRUCTURAL_TYPE,
+                                GraphEdge.resolution_origin.is_not(None),
+                            ),
+                        ),
                     )
                 )
             ).all()

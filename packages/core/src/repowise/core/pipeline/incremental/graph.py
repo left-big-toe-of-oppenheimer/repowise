@@ -278,6 +278,15 @@ pass reads the sources.
             current_paths=[pf.file_info.path for pf in parsed_files],
             changed=changed,
         )
+    resolutions: dict | None = None
+    if patch_plan.eligible:
+        from .resolution_cache import covers, load_resolutions
+
+        resolutions = load_resolutions(Path(repo_path) / ".repowise")
+        if not covers(resolutions, parsed_files, patch_plan.scope):
+            patch_plan = PatchPlan(
+                False, reason="no saved import resolutions for every unchanged file"
+            )
     graph_builder.patch_plan = patch_plan
 
     # TS/JS path aliases (``@/components/...``) resolve only when the
@@ -296,6 +305,9 @@ pass reads the sources.
     graph_builder.set_source_map(source_map)
     graph_builder.set_pytest_roots(traverser.pytest_roots)
     if patch_plan.eligible:
+        from .resolution_cache import restore_resolutions
+
+        restore_resolutions(resolutions, parsed_files, patch_plan.scope)
         seeded = graph_builder.seed_resolved_edges(seed_edges)
         log(
             f"Patching the graph: re-resolving {len(patch_plan.scope)} file(s), "
@@ -308,6 +320,10 @@ pass reads the sources.
         graph_builder.build()
     if timings is not None:
         timings.stop("rebuild.graph")
+    if not read_only:
+        from .resolution_cache import save_resolutions
+
+        save_resolutions(Path(repo_path) / ".repowise", parsed_files)
     if parse_cache is not None:
         with timed(timings, "rebuild.cache_save"):
             parse_cache.save()
@@ -471,11 +487,17 @@ async def rebuild_graph_and_git(
     # metrics lazily one-by-one. Runs after the co-change edge refresh so
     # the cached subgraphs reflect the final structure. Best-effort: every
     # metric still falls back to lazy computation.
-    try:
-        with timed(timings, "rebuild.metrics"):
-            await graph_builder.compute_metrics_parallel()
-    except Exception as exc:
-        log(f"[yellow]Metric pre-computation skipped: {exc}[/yellow]")
+    patch_plan = getattr(graph_builder, "patch_plan", None)
+    if patch_plan is not None and patch_plan.eligible:
+        # A patched update keeps the stored centrality and communities; they
+        # are refreshed by the next full rebuild.
+        log("Metrics left as last indexed (graph was patched)")
+    else:
+        try:
+            with timed(timings, "rebuild.metrics"):
+                await graph_builder.compute_metrics_parallel()
+        except Exception as exc:
+            log(f"[yellow]Metric pre-computation skipped: {exc}[/yellow]")
 
     if timings is not None:
         timings.stop("rebuild")
