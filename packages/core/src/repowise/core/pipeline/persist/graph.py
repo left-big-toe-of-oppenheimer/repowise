@@ -222,66 +222,6 @@ async def persist_graph_nodes(
         logger.warning("graph_node_membership_materialize_skipped", error=str(exc))
 
 
-async def persist_scoped_graph_nodes(
-    session: Any,
-    repo_id: str,
-    graph_builder: Any,
-    scope: tuple[str, ...] | list[str],
-) -> None:
-    """Refresh the structural columns of the graph nodes the patch re-resolved.
-
-    A patched update has not recomputed centrality or communities, so the
-    metric columns (and the ``graph_metrics`` / membership snapshots) keep what
-    the last full index wrote. The payload omits those keys, and the upsert only
-    writes the keys it is given. Nodes outside the scope are untouched.
-    """
-    from repowise.core.persistence import batch_upsert_graph_nodes
-
-    graph = graph_builder.graph()
-    parsed_files = graph_builder._parsed_files
-    owned: list[str] = []
-    for path in scope:
-        parsed = parsed_files.get(path)
-        if parsed is None:
-            continue
-        owned.append(path)
-        owned.extend(dict.fromkeys(sym.id for sym in parsed.symbols if sym.id in graph))
-
-    nodes: list[dict[str, Any]] = []
-    for node_id in dict.fromkeys(owned):
-        data = graph.nodes[node_id]
-        node_type = data.get("node_type", "file")
-        node_dict: dict[str, Any] = {
-            "node_id": node_id,
-            "node_type": node_type,
-            "language": data.get("language", "unknown"),
-            "symbol_count": data.get("symbol_count", 0),
-            "has_error": data.get("has_error", False),
-            "is_test": data.get("is_test", False),
-            "is_entry_point": data.get("is_entry_point", False),
-            "is_reachability_root": is_reachability_root(data),
-            "always_run_reason": data.get("always_run_reason"),
-        }
-        if node_type == "symbol":
-            node_dict.update(
-                {
-                    "kind": data.get("kind"),
-                    "name": data.get("name"),
-                    "qualified_name": data.get("qualified_name"),
-                    "file_path": data.get("file_path"),
-                    "start_line": data.get("start_line"),
-                    "end_line": data.get("end_line"),
-                    "visibility": data.get("visibility"),
-                    "signature": data.get("signature"),
-                    "parent_symbol_id": data.get("parent_name"),
-                    "public_api": data.get("public_api"),
-                }
-            )
-        nodes.append(node_dict)
-    if nodes:
-        await batch_upsert_graph_nodes(session, repo_id, nodes)
-
-
 def _changed_file_symbols(
     parsed_files: list[Any] | None, changed_paths: list[str]
 ) -> tuple[list[str], list[Any]]:

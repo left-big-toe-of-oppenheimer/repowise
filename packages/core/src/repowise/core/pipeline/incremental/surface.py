@@ -18,11 +18,9 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any
 
-# Languages whose imports are not part of a file's surface: another file never
-# resolves a name *through* this file's imports. Java has no re-exports.
-# Python (``__init__`` re-exports) and TS/JS (barrel files) are left out.
-PATCHABLE_LANGUAGES = frozenset({"java"})
-IMPORTS_IRRELEVANT = frozenset({"java"})
+# Body-only patching is enabled only for languages covered by the resolver
+# convergence fixtures. Expand this set together with those fixtures.
+PATCHABLE_LANGUAGES = frozenset({"java", "python", "typescript", "javascript", "go", "csharp", "kotlin", "rust", "ruby", "php", "scala", "swift"})
 
 
 @dataclass(frozen=True)
@@ -63,25 +61,44 @@ def surface_fingerprint(parsed: Any) -> str:
     """
     h = hashlib.sha256()
     parts: list[Any] = [
-        sorted(_symbol_key(s) for s in parsed.symbols),
-        sorted((r.child_name, r.parent_name, str(r.kind)) for r in parsed.heritage),
+        parsed.file_info.language,
+        parsed.module_name,
+        sorted((_symbol_key(s) for s in parsed.symbols), key=repr),
+        sorted(
+            ((r.child_name, r.parent_name, str(r.kind)) for r in parsed.heritage),
+            key=repr,
+        ),
         sorted(parsed.exports),
         sorted(parsed.export_aliases.items()),
-    ]
-    if parsed.file_info.language not in IMPORTS_IRRELEVANT:
-        parts.append(
-            sorted(
+        sorted(parsed.registrars),
+        sorted(
+            (
                 (
                     i.module_path,
                     tuple(i.imported_names),
                     i.is_relative,
                     i.is_reexport,
+                    i.is_module_declaration,
                     i.type_only,
                     i.deferred,
+                    tuple(
+                        (
+                            b.local_name,
+                            b.exported_name,
+                            b.is_module_alias,
+                            b.is_global,
+                            b.is_static_import,
+                            b.line,
+                            b.column,
+                        )
+                        for b in i.bindings
+                    ),
                 )
                 for i in parsed.imports
-            )
-        )
+            ),
+            key=repr,
+        ),
+    ]
     h.update(repr(parts).encode())
     return h.hexdigest()
 
@@ -107,9 +124,11 @@ def plan_patch(
         language = parsed.file_info.language
         if language not in PATCHABLE_LANGUAGES:
             return PatchPlan(False, reason=f"{path}: {language} edits are not patched")
+        if getattr(parsed, "grammar_missing", False):
+            return PatchPlan(False, reason=f"{path}: parser grammar unavailable")
         before = parse_cache.previous_entry(path, exclude_hash=parsed.content_hash)
         if before is None:
             return PatchPlan(False, reason=f"{path}: new file or no earlier parse to compare")
         if surface_fingerprint(before) != surface_fingerprint(parsed):
-            return PatchPlan(False, reason=f"{path}: its symbols or heritage changed")
+            return PatchPlan(False, reason=f"{path}: its dependency surface changed")
     return PatchPlan(True, scope=tuple(sorted(changed)))

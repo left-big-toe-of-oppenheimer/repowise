@@ -392,6 +392,8 @@ async def rebuild_graph_and_git(
     if timings is not None:
         timings.start("rebuild")
 
+    from .graph_seed import invalidate_seed_edge_cache
+
     seed_edges = None
     if patch_graph:
         from .graph_seed import load_seed_edges
@@ -399,7 +401,10 @@ async def rebuild_graph_and_git(
         with timed(timings, "rebuild.seed_load"):
             seed_edges = await load_seed_edges(repo_path)
         if seed_edges is None:
-            log("[yellow]Full graph rebuild: no persisted edges to reuse[/yellow]")
+            log("[yellow]Full graph rebuild: no valid persisted edge snapshot[/yellow]")
+    # The snapshot is disposable and the database is authoritative. Remove it
+    # before any subsequent write can commit; successful persistence recreates it.
+    invalidate_seed_edge_cache(repo_path)
 
     # Full re-ingest for graph (needed for cascade analysis)
     parsed_files, source_map, graph_builder, repo_structure, file_count = build_repo_graph(
@@ -487,17 +492,14 @@ async def rebuild_graph_and_git(
     # metrics lazily one-by-one. Runs after the co-change edge refresh so
     # the cached subgraphs reflect the final structure. Best-effort: every
     # metric still falls back to lazy computation.
-    patch_plan = getattr(graph_builder, "patch_plan", None)
-    if getattr(patch_plan, "eligible", False) is True:
-        # A patched update keeps the stored centrality and communities; they
-        # are refreshed by the next full rebuild.
-        log("Metrics left as last indexed (graph was patched)")
-    else:
-        try:
-            with timed(timings, "rebuild.metrics"):
-                await graph_builder.compute_metrics_parallel()
-        except Exception as exc:
-            log(f"[yellow]Metric pre-computation skipped: {exc}[/yellow]")
+    # Global metrics must reflect the patched graph as well. The persistence
+    # layer's upsert gate skips unchanged node rows, but computing all metrics
+    # avoids silently serving stale centrality/community values.
+    try:
+        with timed(timings, "rebuild.metrics"):
+            await graph_builder.compute_metrics_parallel()
+    except Exception as exc:
+        log(f"[yellow]Metric pre-computation skipped: {exc}[/yellow]")
 
     if timings is not None:
         timings.stop("rebuild")

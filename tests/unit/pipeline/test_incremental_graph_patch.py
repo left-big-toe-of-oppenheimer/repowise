@@ -178,12 +178,9 @@ def test_body_edit_is_patched_and_equals_a_full_rebuild(
 ) -> None:
     tree, seed = indexed
     (tree / _SERVICE).write_text(
-        _FILES[_SERVICE]
-        .replace(
-            "import com.acme.util.Util;",
-            "import com.acme.util.Clock;\nimport com.acme.util.Util;",
+        _FILES[_SERVICE].replace(
+            "return Util.id() + name();", "return Util.id() + Util.twice(1) + name();"
         )
-        .replace("return Util.id() + name();", "return Util.id() + name() + Clock.now();")
     )
 
     patched = _patched(tree, seed)
@@ -191,11 +188,9 @@ def test_body_edit_is_patched_and_equals_a_full_rebuild(
     assert patched.patch_plan.eligible, patched.patch_plan.reason
     assert patched.patch_plan.scope == (_SERVICE,)
     _assert_equals_full(tree, patched, tmp_path)
-    clock = "src/com/acme/util/Clock.java"
-    assert patched.graph().has_edge(_SERVICE, clock)
 
 
-def test_removing_an_import_and_call_is_patched(
+def test_removing_an_import_and_call_falls_back_to_full_build(
     indexed: tuple[Path, list[dict]], tmp_path: Path
 ) -> None:
     tree, seed = indexed
@@ -207,9 +202,9 @@ def test_removing_an_import_and_call_is_patched(
 
     patched = _patched(tree, seed)
 
-    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert not patched.patch_plan.eligible
+    assert "dependency surface" in (patched.patch_plan.reason or "")
     _assert_equals_full(tree, patched, tmp_path)
-
 
 def test_unchanged_tree_patches_to_the_same_graph(
     indexed: tuple[Path, list[dict]], tmp_path: Path
@@ -231,14 +226,14 @@ def test_unchanged_tree_patches_to_the_same_graph(
                 _FILES[_SERVICE].replace("public String run()", "public int run(int a)")
                 .replace("return Util.id() + name();", "return a;")
             ),
-            "symbols or heritage",
+            "dependency surface",
             id="signature-change",
         ),
         pytest.param(
             lambda t: (t / _SERVICE).write_text(
                 _FILES[_SERVICE].replace(" extends Base", "")
             ),
-            "symbols or heritage",
+            "dependency surface",
             id="heritage-change",
         ),
         pytest.param(
@@ -275,15 +270,43 @@ def test_surface_changes_fall_back_to_a_full_rebuild(
 
 def test_unsupported_language_falls_back(tmp_path: Path) -> None:
     tree = tmp_path / "repo"
-    _write(tree, {**_FILES, "tools/helper.py": "def f():\n    return 1\n"})
+    helper = "#!/bin/sh\nf() { echo one; }\n"
+    _write(tree, {**_FILES, "tools/helper.sh": helper})
     first = build_repo_graph(tree, [], collect_sources=True)[2]
     seed = _seed_rows(first)
-    (tree / "tools/helper.py").write_text("def f():\n    return 2\n")
+    (tree / "tools/helper.sh").write_text(helper.replace("echo one", "echo two"))
 
     patched = _patched(tree, seed)
 
     assert not patched.patch_plan.eligible
-    assert "python edits are not patched" in (patched.patch_plan.reason or "")
+    assert "shell edits are not patched" in (patched.patch_plan.reason or "")
+    _assert_equals_full(tree, patched, tmp_path)
+
+
+def test_go_package_clause_change_falls_back(
+    tmp_path: Path,
+) -> None:
+    tree = tmp_path / "repo"
+    _write(
+        tree,
+        {
+            "go.mod": "module example.com/poc\n\ngo 1.22\n",
+            "util/util.go": "package util\nfunc First() int { return 1 }\n",
+            "service/service.go": (
+                "package service\nimport \"example.com/poc/util\"\n"
+                "func Run() int { return util.First() }\n"
+            ),
+        },
+    )
+    first = build_repo_graph(tree, [], collect_sources=True)[2]
+    (tree / "util/util.go").write_text(
+        "package utils\nfunc First() int { return 1 }\n"
+    )
+
+    patched = _patched(tree, _seed_rows(first))
+
+    assert not patched.patch_plan.eligible
+    assert "dependency surface" in (patched.patch_plan.reason or "")
     _assert_equals_full(tree, patched, tmp_path)
 
 
@@ -314,3 +337,195 @@ def test_patch_resolves_only_the_changed_file(
 
     assert patched.patch_plan.eligible
     assert set(resolved) == {_SERVICE}
+
+
+@pytest.mark.parametrize(
+    ("language", "files", "target", "before", "after"),
+    [
+        pytest.param(
+            "python",
+            {
+                "util.py": "def first():\n    return 1\n\ndef second():\n    return 2\n",
+                "service.py": (
+                    "from util import first, second\n\ndef run():\n    return first()\n"
+                ),
+            },
+            "service.py",
+            "return first()",
+            "return first() + second()",
+            id="python-body-only",
+        ),
+        pytest.param(
+            "go",
+            {
+                "go.mod": "module example.com/poc\n\ngo 1.22\n",
+                "util/util.go": (
+                    "package util\nfunc First() int { return 1 }\n"
+                    "func Second() int { return 2 }\n"
+                ),
+                "service/service.go": (
+                    "package service\nimport \"example.com/poc/util\"\n"
+                    "func Run() int { return util.First() }\n"
+                ),
+            },
+            "service/service.go",
+            "return util.First()",
+            "return util.First() + util.Second()",
+            id="go-body-only",
+        ),
+        pytest.param(
+            "csharp",
+            {
+                "Util.cs": (
+                    "namespace Poc;\npublic class Util {\n"
+                    "    public static int First() => 1;\n"
+                    "    public static int Second() => 2;\n}\n"
+                ),
+                "Service.cs": (
+                    "using Poc;\nnamespace Poc;\npublic class Service {\n"
+                    "    public int Run() { return Util.First(); }\n}\n"
+                ),
+            },
+            "Service.cs",
+            "return Util.First();",
+            "return Util.First() + Util.Second();",
+            id="csharp-body-only",
+        ),
+        pytest.param(
+            "kotlin",
+            {
+                "Util.kt": (
+                    "package com.acme\nobject Util {\n"
+                    "    fun first(): Int = 1\n    fun second(): Int = 2\n}\n"
+                ),
+                "Service.kt": (
+                    "package com.acme\nclass Service {\n"
+                    "    fun run(): Int { return Util.first() }\n}\n"
+                ),
+            },
+            "Service.kt",
+            "Util.first()",
+            "Util.first() + Util.second()",
+            id="kotlin-body-only",
+        ),
+        pytest.param(
+            "rust",
+            {
+                "Cargo.toml": "[package]\nname = \"poc\"\nversion = \"0.1.0\"\n",
+                "src/lib.rs": "pub mod util;\npub mod service;\n",
+                "src/util.rs": (
+                    "pub fn first() -> i32 { 1 }\n"
+                    "pub fn second() -> i32 { 2 }\n"
+                ),
+                "src/service.rs": (
+                    "use crate::util;\npub fn run() -> i32 { util::first() }\n"
+                ),
+            },
+            "src/service.rs",
+            "util::first()",
+            "util::first() + util::second()",
+            id="rust-body-only",
+        ),
+        pytest.param(
+            "ruby",
+            {
+                "util.rb": (
+                    "module Util\n  def self.first; 1; end\n"
+                    "  def self.second; 2; end\nend\n"
+                ),
+                "service.rb": (
+                    "require_relative 'util'\nclass Service\n"
+                    "  def run; Util.first; end\nend\n"
+                ),
+            },
+            "service.rb",
+            "Util.first;",
+            "Util.first + Util.second;",
+            id="ruby-body-only",
+        ),
+        pytest.param(
+            "php",
+            {
+                "Util.php": (
+                    "<?php\nnamespace Poc;\n"
+                    "function first(): int { return 1; }\n"
+                    "function second(): int { return 2; }\n"
+                ),
+                "Service.php": (
+                    "<?php\nnamespace Poc;\n"
+                    "function run(): int { return first(); }\n"
+                ),
+            },
+            "Service.php",
+            "return first();",
+            "return first() + second();",
+            id="php-body-only",
+        ),
+        pytest.param(
+            "scala",
+            {
+                "Util.scala": (
+                    "package poc\nobject Util { def first: Int = 1; def second: Int = 2 }\n"
+                ),
+                "Service.scala": (
+                    "package poc\nobject Service { def run: Int = Util.first }\n"
+                ),
+            },
+            "Service.scala",
+            "Util.first }",
+            "Util.first + Util.second }",
+            id="scala-body-only",
+        ),
+        pytest.param(
+            "swift",
+            {
+                "Util.swift": (
+                    "public enum Util { static func first() -> Int { 1 }; "
+                    "static func second() -> Int { 2 } }\n"
+                ),
+                "Service.swift": (
+                    "public enum Service { static func run() -> Int { Util.first() } }\n"
+                ),
+            },
+            "Service.swift",
+            "Util.first()",
+            "Util.first() + Util.second()",
+            id="swift-body-only",
+        ),
+        pytest.param(
+            "typescript",
+            {
+                "util.ts": (
+                    "export function first(): number { return 1; }\n"
+                    "export function second(): number { return 2; }\n"
+                ),
+                "service.ts": (
+                    "import { first, second } from './util';\n"
+                    "export function run(): number { return first(); }\n"
+                ),
+            },
+            "service.ts",
+            "return first();",
+            "return first() + second();",
+            id="typescript-body-only",
+        ),
+    ],
+)
+def test_supported_language_body_edit_matches_full_build(
+    tmp_path: Path,
+    language: str,
+    files: dict[str, str],
+    target: str,
+    before: str,
+    after: str,
+) -> None:
+    tree = tmp_path / language
+    _write(tree, files)
+    original = build_repo_graph(tree, [], collect_sources=True)[2]
+    (tree / target).write_text(files[target].replace(before, after))
+
+    patched = _patched(tree, _seed_rows(original))
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert patched.patch_plan.scope == (target,)
+    _assert_equals_full(tree, patched, tmp_path / f"{language}-oracle")

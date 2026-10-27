@@ -219,20 +219,14 @@ async def persist_nodes(ctx: IncrementalPersist) -> None:
     # existing repos. Before health, whose plan annotations read each
     # symbol's ``public_api`` from here; a failed write leaves them reading
     # the last run's flags.
-    from repowise.core.pipeline.persist import persist_graph_nodes, persist_scoped_graph_nodes
+    from repowise.core.pipeline.persist import persist_graph_nodes
 
-    plan = getattr(ctx.graph_builder, "patch_plan", None)
     with timed(ctx.timings, "persist.graph_nodes"):
-        if getattr(plan, "eligible", False) is True:
-            # A patched graph carries no fresh centrality: write only the
-            # re-resolved nodes' structure and leave the stored metrics alone.
-            await persist_scoped_graph_nodes(
-                ctx.session, ctx.repo_id, ctx.graph_builder, plan.scope
-            )
-        else:
-            await persist_graph_nodes(
-                ctx.session, ctx.repo_id, ctx.graph_builder, timings=ctx.timings
-            )
+        # This carries the fresh global metrics. The upsert gate compares the
+        # snapshot with stored rows and only writes nodes whose values changed.
+        await persist_graph_nodes(
+            ctx.session, ctx.repo_id, ctx.graph_builder, timings=ctx.timings
+        )
 
 
 async def persist_health(ctx: IncrementalPersist) -> None:
@@ -622,6 +616,7 @@ async def _write(ctx: IncrementalPersist) -> None:
     ctx.engine = create_engine(resolve_db_url(ctx.repo_path))
     if timings is not None:
         timings.start("persist")
+    persisted = False
     try:
         with timed(timings, "persist.open"):
             await init_db(ctx.engine)
@@ -662,6 +657,7 @@ async def _write(ctx: IncrementalPersist) -> None:
         await run_steps(ctx, CLEANUP_STEPS)
         with timed(timings, "persist.planner_stats"):
             await refresh_planner_stats(ctx.engine)
+        persisted = True
 
         # Ceiling: retired non-file pages' *vector* embeddings survive this path.
         # There is no store here to delete them from, and building one would
@@ -675,3 +671,12 @@ async def _write(ctx: IncrementalPersist) -> None:
         await ctx.engine.dispose()
         if timings is not None:
             timings.stop("persist")
+
+    if persisted:
+        # The DB transaction is committed and its engine is disposed before we
+        # refresh this optional, sealed snapshot. If the write fails, the next
+        # update safely reloads the authoritative rows from SQL.
+        from .graph_seed import save_seed_edge_cache
+
+        with timed(timings, "persist.graph_seed_cache"):
+            await save_seed_edge_cache(ctx.repo_path, ctx.graph_builder)

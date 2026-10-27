@@ -82,12 +82,11 @@ in one file can change how another resolves. Set `REPOWISE_INCREMENTAL_GRAPH=1`
 stored import, call and heritage edges for the rest. That is only done when the
 edit is provably local: every changed file is Java, none was added, removed or
 renamed, and none changed its symbols, signatures, annotations or heritage. Any
-other change falls back to the full rebuild, and the update says which. A
-patched update leaves centrality and community metrics as the last full update
-computed them, so run an update without the variable now and then to refresh
-them. The first update after upgrading is always a full one: it records how
-each file's imports resolved, which the patch needs.
-
+other change falls back to the full rebuild, and the update says which. The
+patched graph still recomputes global centrality and community metrics so they
+remain fresh; these passes still take time on a large repository. The first
+update after upgrading is always a full one: it records how each file's imports
+resolved, which the patch needs.
 **Indexing cost more than expected.** `repowise init --dry-run` shows the
 estimate without writing a wiki, `--test-run` generates for the top 10 files
 only, and `--skip-tests --skip-infra` narrows scope. Lower `--concurrency` if
