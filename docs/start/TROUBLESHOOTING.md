@@ -76,17 +76,20 @@ it), or turn the scan off with `REPOWISE_COMMIT_HEALTH_COMMITS=0`. An update on
 a `--mode fast` index does not run the scan.
 
 **An update of a very large repository takes as long as the first index.**
-Every update re-resolves the imports and calls of every file, because a change
-in one file can change how another resolves. Set `REPOWISE_INCREMENTAL_GRAPH=1`
-(experimental) to let an update re-resolve only the changed files and reuse the
-stored import, call and heritage edges for the rest. That is only done when the
-edit is provably local: every changed file is Java, none was added, removed or
-renamed, and none changed its symbols, signatures, annotations or heritage. Any
-other change falls back to the full rebuild, and the update says which. The
-patched graph still recomputes global centrality and community metrics so they
-remain fresh; these passes still take time on a large repository. The first
-update after upgrading is always a full one: it records how each file's imports
-resolved, which the patch needs.
+Every update currently walks and reads the repository and runs global analysis.
+Set `REPOWISE_INCREMENTAL_GRAPH=1` (experimental) to patch the graph for
+body-only edits in Java, Python, JavaScript, TypeScript, Go, C#, Kotlin, Rust,
+Ruby, PHP, Scala and Swift when the parsed dependency surface is unchanged.
+Changed imports/exports/signatures, added/removed/renamed files and unsupported
+languages fall back to the full rebuild. The patch re-resolves the changed
+files' imports, calls and heritage; global type-use, framework and dynamic-hint
+passes and centrality/community metrics still run repo-wide. Metrics therefore
+remain fresh, but these global passes still cost time on a large repository.
+A sealed `.repowise/graph_seed_edges.pkl` snapshot avoids re-reading seed edges
+from the database when it matches the repository ID, edge count and parser
+fingerprint. A missing or stale snapshot falls back safely; the first update
+after enabling the feature may need a full rebuild to create the snapshot.
+
 **Indexing cost more than expected.** `repowise init --dry-run` shows the
 estimate without writing a wiki, `--test-run` generates for the top 10 files
 only, and `--skip-tests --skip-infra` narrows scope. Lower `--concurrency` if
