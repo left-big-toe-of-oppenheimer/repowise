@@ -79,7 +79,7 @@ def covers(saved: dict[str, tuple] | None, parsed_files: Iterable[Any], skip: Co
         entry = saved.get(path)
         if entry is None or entry[0] != pf.content_hash or len(entry[1]) != len(pf.imports):
             return False
-        if any(len(bindings) != len(imp.bindings) for imp, (_, bindings) in zip(pf.imports, entry[1])):
+        if any(len(bindings) != len(imp.bindings) for imp, (_, bindings) in zip(pf.imports, entry[1], strict=True)):
             return False
     return True
 
@@ -89,7 +89,7 @@ def restore_resolutions(saved: dict[str, tuple], parsed_files: Iterable[Any], sk
     for pf in parsed_files:
         if pf.file_info.path in skip:
             continue
-        for imp, (resolved, sources) in zip(pf.imports, saved[pf.file_info.path][1]):
+        for imp, (resolved, sources) in zip(pf.imports, saved[pf.file_info.path][1], strict=True):
             imp.resolved_file = resolved
-            for binding, source in zip(imp.bindings, sources):
+            for binding, source in zip(imp.bindings, sources, strict=True):
                 binding.source_file = source
