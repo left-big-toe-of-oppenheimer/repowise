@@ -941,7 +941,7 @@ async def _run_ingestion(
     _wire_tsconfig(graph_builder, repo_path, parsed_files, walk, progress)
     await _build_graph(graph_builder, len(file_infos), progress)
     # What the build resolved, for a later update that patches instead of rebuilding.
-    from .incremental.resolution_cache import save_resolutions
+    from repowise.core.pipeline.incremental.resolution_cache import save_resolutions
 
     save_resolutions(repo_path / ".repowise", parsed_files)
     # Stack detection and framework edges fail separately: the stack also

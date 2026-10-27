@@ -223,7 +223,7 @@ async def persist_nodes(ctx: IncrementalPersist) -> None:
 
     plan = getattr(ctx.graph_builder, "patch_plan", None)
     with timed(ctx.timings, "persist.graph_nodes"):
-        if plan is not None and plan.eligible:
+        if getattr(plan, "eligible", False) is True:
             # A patched graph carries no fresh centrality: write only the
             # re-resolved nodes' structure and leave the stored metrics alone.
             await persist_scoped_graph_nodes(

@@ -488,7 +488,7 @@ async def rebuild_graph_and_git(
     # the cached subgraphs reflect the final structure. Best-effort: every
     # metric still falls back to lazy computation.
     patch_plan = getattr(graph_builder, "patch_plan", None)
-    if patch_plan is not None and patch_plan.eligible:
+    if getattr(patch_plan, "eligible", False) is True:
         # A patched update keeps the stored centrality and communities; they
         # are refreshed by the next full rebuild.
         log("Metrics left as last indexed (graph was patched)")
