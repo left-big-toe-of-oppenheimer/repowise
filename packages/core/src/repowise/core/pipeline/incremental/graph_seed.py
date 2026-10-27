@@ -90,17 +90,24 @@ async def load_seed_edges(repo_path: Any) -> dict[str, list] | None:
     except Exception as exc:
         log.warning("graph_seed_cache_unavailable", error=str(exc))
         return None
-    if (
-        cache.get("version") != _CACHE_VERSION
-        or cache.get("repo_path") != str(root)
-        or cache.get("repo_id") != repo_id
-        or cache.get("edge_count") != edge_count
-        or cache.get("parser_fingerprint") != fingerprint
-        or not isinstance(cache.get("nodes"), list)
-        or not isinstance(cache.get("edges"), list)
-    ):
-        log.info("graph_seed_cache_skipped", reason="snapshot does not match the indexed DB")
+    if not isinstance(cache, dict):
+        log.info("graph_seed_cache_skipped", reason="snapshot payload is not a mapping")
         return None
+    expected = (
+        ("version", _CACHE_VERSION),
+        ("repo_path", str(root)),
+        ("repo_id", repo_id),
+        ("edge_count", edge_count),
+        ("parser_fingerprint", fingerprint),
+    )
+    for key, value in expected:
+        if cache.get(key) != value:
+            log.info("graph_seed_cache_skipped", reason=f"snapshot {key} mismatch")
+            return None
+    for key in ("nodes", "edges"):
+        if not isinstance(cache.get(key), list):
+            log.info("graph_seed_cache_skipped", reason=f"snapshot {key} payload is invalid")
+            return None
     log.info("graph_seed_cache_hit", nodes=len(cache["nodes"]), edges=len(cache["edges"]))
     return {"nodes": cache["nodes"], "edges": cache["edges"]}
 
