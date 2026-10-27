@@ -569,23 +569,25 @@ class GraphBuilder(
         # edges feed into heritage's import_targets propagation if a
         # future language emits them, and so dead-code reachability
         # sees every edge before any analysis pass runs.
-        self._resolve_type_ref_edges(ctx, import_targets, progress=progress)
+        self._resolve_type_ref_edges(ctx, import_targets, progress=progress, scope=scope_set)
 
         # --- Phase 1c: Resolve C# member-access reads ---
         # Bind `var x = new T(...); ... x.Prop` style property reads
         # to T's defining file. Cuts the largest single bucket of C#
         # unused_export false positives (audit #23).
-        self._resolve_member_reads(progress=progress)
+        self._resolve_member_reads(progress=progress, scope=scope_set)
 
         # --- Ruby rspec directory-mirror edges ---
         # Spec files carry no requires (rspec wires the helper + subject
         # at runtime); the spec/ <-> lib/ mirror convention links them.
-        self._resolve_ruby_spec_mirrors(progress=progress)
+        if scope_set is None:
+            self._resolve_ruby_spec_mirrors(progress=progress)
 
         # --- C/C++ header ↔ implementation pairing ---
         # foo.h -> foo.c (same stem, same dir): consumers including the
         # header must be able to reach the implementation.
-        self._resolve_cpp_header_pairs(progress=progress)
+        if scope_set is None:
+            self._resolve_cpp_header_pairs(progress=progress)
 
         # --- C# / VB.NET partial-class co-fragments ---
         # Fragments of one partial type across files are literally one
@@ -596,29 +598,30 @@ class GraphBuilder(
         # Java/Kotlin (and Scala) reference same-package types without an
         # import statement; emit conservative sibling edges so cohesive
         # packages don't read as disconnected files.
-        self._resolve_jvm_same_package(ctx, progress=progress)
+        self._resolve_jvm_same_package(ctx, progress=progress, scope=scope_set)
 
         # --- C# / VB.NET same-namespace implicit references ---
         # Both reference same-namespace types with no import directive, and
         # project-wide usings widen that; most .vb files declare no namespace
         # at all. Emit conservative sibling edges so neither reads as orphaned.
-        self._resolve_dotnet_same_namespace(ctx, progress=progress)
+        self._resolve_dotnet_same_namespace(ctx, progress=progress, scope=scope_set)
 
         # --- PHP same-namespace implicit references ---
         # An unqualified class name resolves in the file's own namespace with
         # no ``use``; emit conservative sibling edges for those references.
-        self._resolve_php_same_namespace(progress=progress)
+        self._resolve_php_same_namespace(progress=progress, scope=scope_set)
 
         # --- Swift intra-module type references ---
         # Swift files see same-target siblings with no import statement;
         # emit conservative type-reference edges per SPM target.
-        self._resolve_swift_same_module(ctx, progress=progress)
+        self._resolve_swift_same_module(ctx, progress=progress, scope=scope_set)
 
         # --- F# fsproj compile-order spine ---
         # fsproj <Compile Include> order is a real dependency constraint
         # (files may only reference earlier files); adjacent pairs keep
         # open-light projects connected.
-        self._resolve_fsharp_compile_order(ctx, progress=progress)
+        if scope_set is None:
+            self._resolve_fsharp_compile_order(ctx, progress=progress)
 
         # --- Phase 2: Resolve heritage (extends/implements) ---
         self._resolve_heritage(import_targets, progress=progress, scope=scope_set)
@@ -627,26 +630,30 @@ class GraphBuilder(
         # Go has no `implements` keyword; connect concrete types to the
         # interfaces their method set satisfies so interfaces reached only
         # through implementors are not flagged as dead exports.
-        self._resolve_go_interface_satisfaction(progress=progress)
+        if scope_set is None:
+            self._resolve_go_interface_satisfaction(progress=progress)
 
         # --- Phase 3: Resolve symbol-level calls ---
         self._resolve_calls(import_targets, progress=progress, scope=scope_set)
 
         # --- Salesforce objects and fields named by Apex and lookup fields ---
-        self._resolve_salesforce_schema()
+        if scope_set is None:
+            self._resolve_salesforce_schema()
 
         # --- Phase 4: Base method → the implementations that answer for it ---
         # Post-pass: needs heritage resolved and reads only the graph.
-        self._resolve_override_dispatch(progress=progress)
+        if scope_set is None:
+            self._resolve_override_dispatch(progress=progress)
 
         # Which symbols a package exports, read off the imports just resolved.
         try:
-            go_index = cached_go_index(ctx)
-            stamp_public_api(
-                self._graph,
-                self._parsed_files,
-                go_package_files(go_index) if go_index is not None else None,
-            )
+            go_index = None if scope_set is not None else cached_go_index(ctx)
+            if scope_set is None:
+                stamp_public_api(
+                    self._graph,
+                    self._parsed_files,
+                    go_package_files(go_index) if go_index is not None else None,
+                )
         except Exception as exc:  # a reader bug must not fail the index
             log.warning("public_api_stamp_failed", error=str(exc))
 
@@ -723,12 +730,18 @@ class GraphBuilder(
         ctx: ResolverContext,
         import_targets: dict[str, set[str]],
         progress: Any | None = None,
+        scope: frozenset[str] | None = None,
     ) -> None:
         """Add type-use edges and widen ``import_targets`` with import-like out-edges."""
+        parsed = (
+            self._parsed_files
+            if scope is None
+            else {path: self._parsed_files[path] for path in scope if path in self._parsed_files}
+        )
         if progress:
-            progress.on_phase_start("graph.type_refs", len(self._parsed_files))
-        type_use_counts = resolve_type_refs(self._parsed_files, ctx, self._graph)
-        for path in self._parsed_files:
+            progress.on_phase_start("graph.type_refs", len(parsed))
+        type_use_counts = resolve_type_refs(parsed, ctx, self._graph)
+        for path in parsed:
             for _, target, data in self._graph.out_edges(path, data=True):
                 # Treat both real ``using`` imports and synthesised
                 # type-use edges as import-like for downstream heritage

@@ -89,6 +89,16 @@ A sealed `.repowise/graph_seed_edges.pkl` snapshot avoids re-reading seed edges
 from the database when it matches the repository ID, edge count and parser
 fingerprint. A missing or stale snapshot falls back safely; the first update
 after enabling the feature may need a full rebuild to create the snapshot.
+When phase timings are enabled, `rebuild.graph` is the overall graph stage;
+`rebuild.graph.patch` and `rebuild.graph.full` identify which graph-build path
+actually ran. The log states the fallback reason when an attempted patch is
+unsafe or its seed/resolution cache is unavailable.
+
+To compare both update paths end-to-end on a synthetic large repository, run
+`python scripts/benchmark_incremental_graph_update.py` from a Repowise checkout.
+It defaults to 5,000 files, makes isolated full/patch copies, checks persisted
+graph convergence, and writes phase timings to `bench/results/`. It uses no
+model provider or LLM and isolates temporary editor/MCP configuration.
 
 **Indexing cost more than expected.** `repowise init --dry-run` shows the
 estimate without writing a wiki, `--test-run` generates for the top 10 files

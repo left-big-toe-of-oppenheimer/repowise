@@ -52,20 +52,27 @@ def _gb() -> SimpleNamespace:
         resolution_origin="same_file",
         confidence=1.0,
     )
-    graph.add_edge("a.py", "c.py", edge_type="type_use", imported_names=["C"])
+    graph.add_edge(
+        "a.py",
+        "c.py",
+        edge_type="type_use",
+        imported_names=["C"],
+        type_uses=["C"],
+        no_scope_widening=True,
+    )
     return SimpleNamespace(graph=lambda: graph)
 
 
-def _seed_identity(rows: list[dict]) -> set[tuple]:
+def _seed_identity(snapshot: dict[str, list]) -> set[tuple]:
     return {
         (
-            row["source_node_id"],
-            row["target_node_id"],
-            row["edge_type"],
-            tuple(row.get("imported_names", [])),
-            tuple(row.get("call_lines", [])),
+            source,
+            target,
+            attrs.get("edge_type", "imports"),
+            tuple(attrs.get("imported_names", [])),
+            tuple(attrs.get("call_lines", [])),
         )
-        for row in rows
+        for source, target, attrs in snapshot["edges"]
     }
 
 
@@ -121,23 +128,28 @@ async def _repo_db(tmp_path: Path, monkeypatch):
     return root, engine, sf
 
 
-async def test_seed_cache_round_trips_only_reusable_edges(tmp_path: Path, monkeypatch) -> None:
+async def test_seed_cache_round_trips_the_full_graph_snapshot(tmp_path: Path, monkeypatch) -> None:
     root, engine, _sf = await _repo_db(tmp_path, monkeypatch)
     try:
         await save_seed_edge_cache(root, _gb())
         cache = root / ".repowise" / "graph_seed_edges.pkl"
         assert cache.is_file()
-        rows = list(await load_seed_edges(root))
-        assert _seed_identity(rows) == {
+        snapshot = await load_seed_edges(root)
+        assert snapshot is not None
+        assert _seed_identity(snapshot) == {
             ("a.py", "b.py", "imports", ("b",), ()),
             ("a.py::run", "b.py::work", "calls", (), (4,)),
             ("a.py::A", "a.py::A::method", "has_method", (), (9,)),
+            ("a.py", "c.py", "type_use", ("C",), ()),
         }
+        type_use = next(edge for edge in snapshot["edges"] if edge[2]["edge_type"] == "type_use")
+        assert type_use[2]["no_scope_widening"] is True
+        assert type_use[2]["type_uses"] == ["C"]
     finally:
         await engine.dispose()
 
 
-async def test_cache_stamp_mismatch_falls_back_to_database(tmp_path: Path, monkeypatch) -> None:
+async def test_cache_stamp_mismatch_forces_a_full_rebuild(tmp_path: Path, monkeypatch) -> None:
     root, engine, sf = await _repo_db(tmp_path, monkeypatch)
     try:
         await save_seed_edge_cache(root, _gb())
@@ -156,8 +168,7 @@ async def test_cache_stamp_mismatch_falls_back_to_database(tmp_path: Path, monke
                 ],
             )
 
-        rows = list(await load_seed_edges(root))
-        assert ("d.py", "e.py", "imports", (), ()) in _seed_identity(rows)
+        assert await load_seed_edges(root) is None
     finally:
         await engine.dispose()
 

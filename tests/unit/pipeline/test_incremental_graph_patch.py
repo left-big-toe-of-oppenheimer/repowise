@@ -20,6 +20,7 @@ import pytest
 
 from repowise.core.ingestion import GraphBuilder
 from repowise.core.pipeline.incremental import build_repo_graph
+from repowise.core.pipeline.phase_timing import PhaseTimings
 
 _FILES = {
     "src/com/acme/util/Util.java": """package com.acme.util;
@@ -73,6 +74,13 @@ public class Holder {
     String compute() { return "x"; }
 }
 """,
+    "src/com/acme/svc/Derived.java": """package com.acme.svc;
+
+public class Derived extends Base {
+    @Override
+    public String name() { return "derived"; }
+}
+""",
     "src/com/acme/svc/Other.java": """package com.acme.svc;
 
 import com.acme.util.Util;
@@ -95,33 +103,13 @@ def _write(root: Path, files: dict[str, str]) -> None:
         path.write_text(text)
 
 
-def _seed_rows(graph_builder: Any) -> list[dict]:
-    """The edges as the index persists them (``graph_edges`` columns, decoded)."""
-    return [
-        row
-        for row in _all_rows(graph_builder)
-        # The index only reads back the structural links a call resolved onto.
-        if row["edge_type"] != "has_method" or row["resolution_origin"]
-    ]
-
-
-def _all_rows(graph_builder: Any) -> list[dict]:
-    return [
-        {
-            "source_node_id": u,
-            "target_node_id": v,
-            "edge_type": d.get("edge_type", "imports"),
-            "confidence": d.get("confidence", 1.0),
-            "imported_names": d.get("imported_names", []),
-            "hint_source": d.get("hint_source"),
-            "resolution_origin": d.get("resolution_origin"),
-            "call_lines": d.get("call_lines", []),
-            "type_only": bool(d.get("type_only", False)),
-            "deferred": bool(d.get("deferred", False)),
-        }
-        for u, v, d in graph_builder.graph().edges(data=True)
-    ]
-
+def _seed_rows(graph_builder: Any) -> dict[str, list]:
+    """Full node/edge snapshot as written by the sealed seed cache."""
+    graph = graph_builder.graph()
+    return {
+        "nodes": [(node, dict(attrs)) for node, attrs in graph.nodes(data=True)],
+        "edges": [(source, target, dict(attrs)) for source, target, attrs in graph.edges(data=True)],
+    }
 
 def _edges(graph_builder: Any) -> set[tuple]:
     return {
@@ -152,7 +140,7 @@ def _full(tree: Path, dest: Path) -> Any:
 
 
 @pytest.fixture
-def indexed(tmp_path: Path) -> tuple[Path, list[dict]]:
+def indexed(tmp_path: Path) -> tuple[Path, dict[str, list]]:
     """A Java tree that has been built once, plus its persisted edges."""
     tree = tmp_path / "repo"
     _write(tree, _FILES)
@@ -160,9 +148,9 @@ def indexed(tmp_path: Path) -> tuple[Path, list[dict]]:
     return tree, _seed_rows(first)
 
 
-def _patched(tree: Path, seed: list[dict]) -> Any:
+def _patched(tree: Path, seed: dict[str, list]) -> Any:
     graph_builder = build_repo_graph(
-        tree, [], collect_sources=True, seed_edges=iter(seed)
+        tree, [], collect_sources=True, seed_edges=seed
     )[2]
     return graph_builder
 
@@ -174,12 +162,13 @@ def _assert_equals_full(tree: Path, patched: Any, tmp_path: Path) -> None:
 
 
 def test_body_edit_is_patched_and_equals_a_full_rebuild(
-    indexed: tuple[Path, list[dict]], tmp_path: Path
+    indexed: tuple[Path, dict[str, list]], tmp_path: Path
 ) -> None:
     tree, seed = indexed
     (tree / _SERVICE).write_text(
         _FILES[_SERVICE].replace(
-            "return Util.id() + name();", "return Util.id() + Util.twice(1) + name();"
+            "return Util.id() + name();",
+            "Holder holder = new Holder();\n        return Util.id() + Util.twice(1) + name() + holder.compute();",
         )
     )
 
@@ -190,8 +179,71 @@ def test_body_edit_is_patched_and_equals_a_full_rebuild(
     _assert_equals_full(tree, patched, tmp_path)
 
 
+def test_phase_timings_identify_the_patched_graph_path(
+    indexed: tuple[Path, dict[str, list]]
+) -> None:
+    tree, seed = indexed
+    (tree / _SERVICE).write_text(
+        _FILES[_SERVICE].replace(
+            "return Util.id() + name();", "return Util.id() + Util.twice(1) + name();"
+        )
+    )
+    timings = PhaseTimings()
+
+    graph_builder = build_repo_graph(
+        tree, [], collect_sources=True, seed_edges=seed, changed_paths={_SERVICE}, timings=timings
+    )[2]
+
+    assert graph_builder.patch_plan.eligible
+    assert "rebuild.graph.patch" in timings.totals
+    assert "rebuild.graph.full" not in timings.totals
+    assert "rebuild.graph" in timings.totals
+
+
+def test_phase_timings_identify_full_rebuild_after_surface_change(
+    indexed: tuple[Path, dict[str, list]]
+) -> None:
+    tree, seed = indexed
+    (tree / _SERVICE).write_text(
+        _FILES[_SERVICE].replace("public String run()", "public int run(int value)")
+    )
+    timings = PhaseTimings()
+    messages: list[str] = []
+
+    graph_builder = build_repo_graph(
+        tree,
+        [],
+        collect_sources=True,
+        seed_edges=seed,
+        changed_paths={_SERVICE},
+        timings=timings,
+        log=messages.append,
+    )[2]
+
+    assert not graph_builder.patch_plan.eligible
+    assert "dependency surface" in (graph_builder.patch_plan.reason or "")
+    assert any("Full graph rebuild" in message and "dependency surface" in message for message in messages)
+    assert "rebuild.graph.full" in timings.totals
+    assert "rebuild.graph.patch" not in timings.totals
+    assert "rebuild.graph" in timings.totals
+
+
+def test_phase_timings_identify_full_path_when_patching_is_not_requested(
+    indexed: tuple[Path, dict[str, list]]
+) -> None:
+    tree, _seed = indexed
+    timings = PhaseTimings()
+
+    graph_builder = build_repo_graph(tree, [], collect_sources=True, timings=timings)[2]
+
+    assert not graph_builder.patch_plan.eligible
+    assert graph_builder.patch_plan.reason == "not requested"
+    assert "rebuild.graph.full" in timings.totals
+    assert "rebuild.graph.patch" not in timings.totals
+
+
 def test_removing_an_import_and_call_falls_back_to_full_build(
-    indexed: tuple[Path, list[dict]], tmp_path: Path
+    indexed: tuple[Path, dict[str, list]], tmp_path: Path
 ) -> None:
     tree, seed = indexed
     (tree / _SERVICE).write_text(
@@ -207,7 +259,7 @@ def test_removing_an_import_and_call_falls_back_to_full_build(
     _assert_equals_full(tree, patched, tmp_path)
 
 def test_unchanged_tree_patches_to_the_same_graph(
-    indexed: tuple[Path, list[dict]], tmp_path: Path
+    indexed: tuple[Path, dict[str, list]], tmp_path: Path
 ) -> None:
     tree, seed = indexed
 
@@ -215,6 +267,29 @@ def test_unchanged_tree_patches_to_the_same_graph(
 
     assert patched.patch_plan.eligible
     assert patched.patch_plan.scope == ()
+    _assert_equals_full(tree, patched, tmp_path)
+
+
+def test_detected_unparsed_config_change_forces_full_rebuild(
+    indexed: tuple[Path, dict[str, list]], tmp_path: Path
+) -> None:
+    tree, seed = indexed
+    (tree / _SERVICE).write_text(
+        _FILES[_SERVICE].replace(
+            "return Util.id() + name();", "return Util.id() + Util.twice(1) + name();"
+        )
+    )
+
+    patched = build_repo_graph(
+        tree,
+        [],
+        collect_sources=True,
+        seed_edges=seed,
+        changed_paths={_SERVICE, "pom.xml"},
+    )[2]
+
+    assert not patched.patch_plan.eligible
+    assert "unparsed files" in (patched.patch_plan.reason or "")
     _assert_equals_full(tree, patched, tmp_path)
 
 
@@ -256,7 +331,7 @@ def test_unchanged_tree_patches_to_the_same_graph(
     ],
 )
 def test_surface_changes_fall_back_to_a_full_rebuild(
-    indexed: tuple[Path, list[dict]], tmp_path: Path, edit: Any, reason: str
+    indexed: tuple[Path, dict[str, list]], tmp_path: Path, edit: Any, reason: str
 ) -> None:
     tree, seed = indexed
     edit(tree)
@@ -310,7 +385,46 @@ def test_go_package_clause_change_falls_back(
     _assert_equals_full(tree, patched, tmp_path)
 
 
-def test_no_seed_means_a_plain_full_build(indexed: tuple[Path, list[dict]]) -> None:
+def test_override_dispatch_edges_survive_a_body_patch(tmp_path: Path) -> None:
+    tree = tmp_path / "repo"
+    files = {
+        "Base.java": "class Base { public int value() { return 1; } }\n",
+        "Derived.java": (
+            "class Derived extends Base { @Override public int value() { return 2; } }\n"
+        ),
+    }
+    _write(tree, files)
+    first = build_repo_graph(tree, [], collect_sources=True)[2]
+    assert any(data.get("edge_type") == "dispatches_to" for _, _, data in first.graph().edges(data=True))
+    (tree / "Derived.java").write_text(
+        files["Derived.java"].replace("return 2", "return 3")
+    )
+
+    patched = _patched(tree, _seed_rows(first))
+
+    assert patched.patch_plan.eligible
+    _assert_equals_full(tree, patched, tmp_path)
+
+
+def test_go_interface_edges_survive_a_body_patch(tmp_path: Path) -> None:
+    tree = tmp_path / "repo"
+    files = {
+        "go.mod": "module example.com/poc\n\ngo 1.22\n",
+        "shape.go": "package poc\ntype Sizer interface { Size() int }\n",
+        "widget.go": "package poc\ntype Widget struct{}\nfunc (Widget) Size() int { return 1 }\n",
+    }
+    _write(tree, files)
+    first = build_repo_graph(tree, [], collect_sources=True)[2]
+    assert any(data.get("edge_type") == "method_implements" for _, _, data in first.graph().edges(data=True))
+    (tree / "widget.go").write_text(files["widget.go"].replace("return 1", "return 2"))
+
+    patched = _patched(tree, _seed_rows(first))
+
+    assert patched.patch_plan.eligible
+    _assert_equals_full(tree, patched, tmp_path)
+
+
+def test_no_seed_means_a_plain_full_build(indexed: tuple[Path, dict[str, list]]) -> None:
     tree, _seed = indexed
 
     graph_builder = build_repo_graph(tree, [], collect_sources=True)[2]
@@ -320,7 +434,7 @@ def test_no_seed_means_a_plain_full_build(indexed: tuple[Path, list[dict]]) -> N
 
 
 def test_patch_resolves_only_the_changed_file(
-    indexed: tuple[Path, list[dict]], monkeypatch: pytest.MonkeyPatch
+    indexed: tuple[Path, dict[str, list]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     tree, seed = indexed
     (tree / _SERVICE).write_text(_FILES[_SERVICE].replace("Util.id()", "Util.twice(1)"))
@@ -362,6 +476,11 @@ def test_patch_resolves_only_the_changed_file(
                 "util/util.go": (
                     "package util\nfunc First() int { return 1 }\n"
                     "func Second() int { return 2 }\n"
+                ),
+                "service/shape.go": "package service\ntype Sizer interface { Size() int }\n",
+                "service/widget.go": (
+                    "package service\ntype Widget struct{}\n"
+                    "func (Widget) Size() int { return 1 }\n"
                 ),
                 "service/service.go": (
                     "package service\nimport \"example.com/poc/util\"\n"
@@ -508,6 +627,23 @@ def test_patch_resolves_only_the_changed_file(
             "return first();",
             "return first() + second();",
             id="typescript-body-only",
+        ),
+        pytest.param(
+            "javascript",
+            {
+                "util.js": (
+                    "export function first() { return 1; }\n"
+                    "export function second() { return 2; }\n"
+                ),
+                "service.js": (
+                    "import { first, second } from './util.js';\n"
+                    "export function run() { return first(); }\n"
+                ),
+            },
+            "service.js",
+            "return first();",
+            "return first() + second();",
+            id="javascript-body-only",
         ),
     ],
 )

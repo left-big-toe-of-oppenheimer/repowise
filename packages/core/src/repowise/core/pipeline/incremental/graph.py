@@ -156,6 +156,7 @@ def build_repo_graph(
     timings: PhaseTimings | None = None,
     read_only: bool = False,
     seed_edges: Any | None = None,
+    changed_paths: set[str] | None = None,
 ) -> tuple[list, dict[str, bytes], Any, Any, int]:
     """Traverse + parse the repo and build the graph (+ framework-aware edges).
 
@@ -172,12 +173,13 @@ def build_repo_graph(
     is set; every path that persists the graph sets it, since the framework-edge
 pass reads the sources.
 
-    ``seed_edges`` (the persisted import/call/heritage edges) asks for a patch
-    instead of a rebuild: when the only files that changed are ones whose
-    cross-file surface is untouched (:func:`~.surface.plan_patch`), the graph is
-    seeded with those edges and only the changed files are re-resolved. Any
-    other change falls back to the full build, and the decision is left on
-    ``graph_builder.patch_plan``.
+    ``seed_edges`` is the last full graph snapshot. ``changed_paths`` is the
+    complete source/config diff from the update detector; it must exactly match
+    the parsed cache misses before a patch is considered. This also catches
+    changed manifests or excluded/unparsed files, which the parse cache alone
+    cannot see. If the changed files' cross-file surface is untouched
+    (:func:`~.surface.plan_patch`), only those files are re-resolved; otherwise
+    the full build runs. The decision is left on ``graph_builder.patch_plan``.
 
     ``timings`` is the run's shared :class:`PhaseTimings` table; each step
     below records into it under a ``rebuild.*`` name. ``None`` records nothing.
@@ -273,11 +275,18 @@ pass reads the sources.
         changed = {
             fi.path: merged[idx] for idx, (fi, _source), _hash in to_parse if idx in merged
         }
-        patch_plan = plan_patch(
-            parse_cache=parse_cache,
-            current_paths=[pf.file_info.path for pf in parsed_files],
-            changed=changed,
-        )
+        expected_changes = set(changed) if changed_paths is None else changed_paths
+        if expected_changes != set(changed):
+            patch_plan = PatchPlan(
+                False,
+                reason="detected changes include unparsed files or do not match the parse cache",
+            )
+        else:
+            patch_plan = plan_patch(
+                parse_cache=parse_cache,
+                current_paths=[pf.file_info.path for pf in parsed_files],
+                changed=changed,
+            )
     resolutions: dict | None = None
     if patch_plan.eligible:
         from .resolution_cache import covers, load_resolutions
@@ -307,17 +316,19 @@ pass reads the sources.
     if patch_plan.eligible:
         from .resolution_cache import restore_resolutions
 
-        restore_resolutions(resolutions, parsed_files, patch_plan.scope)
-        seeded = graph_builder.seed_resolved_edges(seed_edges)
-        log(
-            f"Patching the graph: re-resolving {len(patch_plan.scope)} file(s), "
-            f"reusing {seeded:,} edges"
-        )
-        graph_builder.build(scope=patch_plan.scope)
+        with timed(timings, "rebuild.graph.patch"):
+            restore_resolutions(resolutions, parsed_files, patch_plan.scope)
+            seeded = graph_builder.seed_graph_snapshot(seed_edges)
+            log(
+                f"Patching the graph: re-resolving {len(patch_plan.scope)} file(s), "
+                f"reusing {seeded:,} edges"
+            )
+            graph_builder.build(scope=patch_plan.scope)
     else:
-        if seed_edges is not None:
-            log(f"[yellow]Full graph rebuild: {patch_plan.reason}[/yellow]")
-        graph_builder.build()
+        with timed(timings, "rebuild.graph.full"):
+            if seed_edges is not None:
+                log(f"[yellow]Full graph rebuild: {patch_plan.reason}[/yellow]")
+            graph_builder.build()
     if timings is not None:
         timings.stop("rebuild.graph")
     if not read_only:
@@ -416,6 +427,12 @@ async def rebuild_graph_and_git(
         log=log,
         timings=timings,
         seed_edges=seed_edges,
+        changed_paths={
+            path
+            for fd in file_diffs
+            for path in (getattr(fd, "path", None), getattr(fd, "old_path", None))
+            if path
+        },
     )
 
     # Re-index git metadata for changed files

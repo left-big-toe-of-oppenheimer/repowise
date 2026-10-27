@@ -92,7 +92,9 @@ class ResolveMixin:
                 _phase_done("graph.heritage")
         log.info("Heritage edges resolved", total=total_resolved)
 
-    def _resolve_member_reads(self, progress: Any | None = None) -> None:
+    def _resolve_member_reads(
+        self, progress: Any | None = None, scope: frozenset[str] | None = None
+    ) -> None:
         """Phase 1c: emit ``reads`` edges for C# property / member access.
 
         Runs after type-use resolution so the dead-code analyser sees
@@ -117,6 +119,8 @@ class ResolveMixin:
             progress.on_phase_start(phase, None)
         try:
             cs_texts = collect_csharp_source_texts(self._parsed_files, self._source_map)
+            if scope is not None:
+                cs_texts = {path: text for path, text in cs_texts.items() if path in scope}
             type_to_file = build_csharp_type_to_file(self._parsed_files)
             added = resolve_csharp_member_reads(self._graph, cs_texts, type_to_file)
             log.info("member_read_edges", language="csharp", added=added)
@@ -128,7 +132,9 @@ class ResolveMixin:
                 if callable(done):
                     done(phase)
 
-    def _resolve_jvm_same_package(self, ctx: Any, progress: Any | None = None) -> None:
+    def _resolve_jvm_same_package(
+        self, ctx: Any, progress: Any | None = None, scope: frozenset[str] | None = None
+    ) -> None:
         """Emit same-package ``imports`` edges for JVM files.
 
         JVM languages reference same-package types without an import
@@ -156,6 +162,8 @@ class ResolveMixin:
         try:
             jvm_index = get_or_build_jvm_index(ctx)
             texts = collect_jvm_source_texts(self._parsed_files, self._source_map)
+            if scope is not None:
+                texts = {path: text for path, text in texts.items() if path in scope}
             added = resolve_jvm_same_package_refs(self._graph, jvm_index, texts)
             log.info("same_package_edges", added=added)
         except Exception as exc:
@@ -166,7 +174,9 @@ class ResolveMixin:
                 if callable(done):
                     done(phase)
 
-    def _resolve_dotnet_same_namespace(self, ctx: Any, progress: Any | None = None) -> None:
+    def _resolve_dotnet_same_namespace(
+        self, ctx: Any, progress: Any | None = None, scope: frozenset[str] | None = None
+    ) -> None:
         """Emit same-namespace ``imports`` edges for C# and VB.NET files.
 
         Both languages reference same-namespace types with no import
@@ -206,7 +216,7 @@ class ResolveMixin:
                     self._parsed_files, self._source_map
                 )
                 added = resolve_csharp_same_namespace_refs(
-                    self._graph, index, cs_texts, repo
+                    self._graph, index, cs_texts, repo, set(scope) if scope is not None else None
                 )
                 log.info("same_namespace_edges", language="csharp", added=added)
             if "vbnet" in languages:
@@ -214,7 +224,7 @@ class ResolveMixin:
                     self._parsed_files, ("vbnet",), self._source_map
                 )
                 added = resolve_vbnet_same_namespace_refs(
-                    self._graph, index, vb_texts, repo
+                    self._graph, index, vb_texts, repo, set(scope) if scope is not None else None
                 )
                 log.info("same_namespace_edges", language="vbnet", added=added)
         except Exception as exc:
@@ -440,7 +450,9 @@ class ResolveMixin:
                 if callable(done):
                     done(phase)
 
-    def _resolve_swift_same_module(self, ctx: Any, progress: Any | None = None) -> None:
+    def _resolve_swift_same_module(
+        self, ctx: Any, progress: Any | None = None, scope: frozenset[str] | None = None
+    ) -> None:
         """Emit same-module ``imports`` edges for Swift files.
 
         Swift has no intra-module imports by design — every file in an
@@ -466,7 +478,9 @@ class ResolveMixin:
         try:
             swift_targets = get_or_build_swift_targets(ctx)
             texts = collect_swift_source_texts(self._parsed_files, self._source_map)
-            added = resolve_swift_same_module_refs(self._graph, swift_targets, texts)
+            added = resolve_swift_same_module_refs(
+                self._graph, swift_targets, texts, set(scope) if scope is not None else None
+            )
             log.info("same_module_edges", language="swift", added=added)
         except Exception as exc:
             log.warning("swift_same_module_failed", error=str(exc))
@@ -476,7 +490,9 @@ class ResolveMixin:
                 if callable(done):
                     done(phase)
 
-    def _resolve_php_same_namespace(self, progress: Any | None = None) -> None:
+    def _resolve_php_same_namespace(
+        self, progress: Any | None = None, scope: frozenset[str] | None = None
+    ) -> None:
         """Emit same-namespace ``imports`` edges for PHP files.
 
         An unqualified class name resolves against the file's own namespace
@@ -494,7 +510,9 @@ class ResolveMixin:
             progress.on_phase_start(phase, None)
         try:
             texts = collect_source_texts(self._parsed_files, ("php",), self._source_map)
-            added = resolve_php_same_namespace_refs(self._graph, self._parsed_files, texts)
+            added = resolve_php_same_namespace_refs(
+                self._graph, self._parsed_files, texts, set(scope) if scope is not None else None
+            )
             log.info("same_namespace_edges", language="php", added=added)
         except Exception as exc:
             log.warning("php_same_namespace_failed", error=str(exc))
@@ -713,7 +731,10 @@ class ResolveMixin:
         )
 
         self._add_reference_edges(resolver, scope)
-        self._add_registration_edges(resolver)
+        if scope is None:
+            # Surface-equivalent patching cannot change registrar identities or
+            # decorators; preserve the snapshot's registration edges.
+            self._add_registration_edges(resolver)
 
     def _add_reference_edges(self, resolver: Any, scope: frozenset[str] | None = None) -> None:
         """Emit ``references`` edges for functions named but never called.
