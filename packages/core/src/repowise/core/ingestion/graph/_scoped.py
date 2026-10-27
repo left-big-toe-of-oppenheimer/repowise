@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..models import REGISTRATION_HINT
+
 
 class ScopedBuildMixin:
     """Seed a graph with a full snapshot and resolve only files in scope."""
@@ -66,7 +68,7 @@ class ScopedBuildMixin:
         stable_global = {"method_implements", "dispatches_to"}
         for source, target, data in list(graph.edges(data=True)):
             edge_type = data.get("edge_type")
-            if edge_type in stable_global:
+            if edge_type in stable_global or data.get("hint_source") == REGISTRATION_HINT:
                 continue
             if source in owned:
                 if edge_type == "defines":

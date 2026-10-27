@@ -706,3 +706,48 @@ def test_ruby_spec_mirror_edge_survives_a_body_patch(tmp_path: Path) -> None:
         for source, target, kind, _confidence, hint_source, *_ in _edges(patched)
     )
     _assert_equals_full(tree, patched, tmp_path / "ruby-oracle")
+
+
+def test_registration_edge_survives_a_registrar_body_patch(tmp_path: Path) -> None:
+    tree = tmp_path / "registrars"
+    registrar_path = "registry.py"
+    handler_path = "handlers.py"
+    _write(
+        tree,
+        {
+            registrar_path: (
+                "_HANDLERS = []\n"
+                "def register(fn):\n"
+                "    _HANDLERS.append(fn)\n"
+                "    marker = 1\n"
+                "    return fn\n"
+            ),
+            handler_path: (
+                "from registry import register\n\n"
+                "@register\n"
+                "def handle():\n"
+                "    return 1\n"
+            ),
+        },
+    )
+    original = build_repo_graph(tree, [], collect_sources=True)[2]
+    def has_registration_edge(graph_builder: Any) -> bool:
+        return any(
+            source == registrar_path + "::register"
+            and target == handler_path + "::handle"
+            and edge_type == "references"
+            and hint_source == "decorator_registration"
+            for source, target, edge_type, _confidence, hint_source, *_ in _edges(graph_builder)
+        )
+
+    assert has_registration_edge(original)
+    (tree / registrar_path).write_text(
+        (tree / registrar_path).read_text().replace("marker = 1", "marker = 2")
+    )
+
+    patched = _patched(tree, _seed_rows(original))
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert patched.patch_plan.scope == (registrar_path,)
+    assert has_registration_edge(patched)
+    _assert_equals_full(tree, patched, tmp_path / "registrars-oracle")
