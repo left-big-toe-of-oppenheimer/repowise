@@ -300,7 +300,7 @@ def _add_conftest_edges(
         conf_dir = Path(conf).parent.as_posix()
         prefix = f"{conf_dir}/" if conf_dir != "." else ""
         for p in seers:
-            if p == conf or not (p.startswith(prefix) or (prefix == "" and "/" not in p)):
+            if p == conf or not _under(p, prefix):
                 continue
             if _add_edge_if_new(graph, p, conf):
                 graph[p][conf]["hint_source"] = CONFTEST_HINT
@@ -315,6 +315,11 @@ def _sees_conftests(graph: nx.DiGraph, p: str, roots: PytestRoots | None) -> boo
     ):
         return False
     return bool(graph.nodes.get(p, {}).get("is_test", False))
+
+
+def _under(p: str, prefix: str) -> bool:
+    """Whether *p* sits under the conftest directory *prefix* (``""`` is the root)."""
+    return p.startswith(prefix) or (prefix == "" and "/" not in p)
 
 
 def fixture_declaration(name: str, decorators: Iterable[str]) -> tuple[str, bool] | None:
