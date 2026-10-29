@@ -72,6 +72,7 @@ from .go import GoReturnTypes
 from .java import _JAVA_TYPE_PARAMETERS, JavaTypeVisibility, _header_type_parameters  # noqa: F401
 from .python import PythonReturnTypes
 from .ranges import RangeVariableTypes, _is_its_own_container  # noqa: F401
+from .rust import RustReturnTypes
 
 # Languages whose extensions the extension index holds, keyed on the type extended.
 _EXTENSION_LANGUAGES = frozenset({"csharp", "kotlin"})
@@ -251,6 +252,7 @@ class ReceiverTypingMixin(
     JavaTypeVisibility,
     PythonReturnTypes,
     GoReturnTypes,
+    RustReturnTypes,
     RangeVariableTypes,
     CallbackParameterTypes,
     FrameworkReceiverTypes,
@@ -1439,9 +1441,9 @@ class ReceiverTypingMixin(
         that makes the name unanswerable, as for any declaration. A name a
         declaration already types keeps that reading untouched.
 
-        A Python name may be rebound to anything, so one the body also binds
-        other than by a call assignment is skipped, and one whose call
-        assignments do not all yield a type is unanswerable.
+        A Python or Rust name may be rebound (a Rust `let` shadows), so one the
+        body also binds other than by a call assignment is skipped, and one
+        whose call assignments do not all yield a type is unanswerable.
         """
         assignments = self._call_assignments_for(file_path, language)
         sites = self._call_sites_for(file_path)
@@ -1460,7 +1462,7 @@ class ReceiverTypingMixin(
             )
             if type_id is not None:
                 record_type(types, assignment.name, type_id)
-            elif language == "python":
+            elif language in ("python", "rust"):
                 types[assignment.name] = None
 
     def _rebound_names(
@@ -1502,8 +1504,9 @@ class ReceiverTypingMixin(
         A Python return annotation must be one bare class name, quoted or not,
         read in the callee's file as a chain hop reads a field's type. A
         property is read, not called, and an ``async def`` returns a coroutine
-        unless the call is *awaited*. Any other language's declared return
-        type is read by ``_written_returned_class``. Overloads that disagree
+        unless the call is *awaited*. A Rust call is *awaited* when a ``?`` or
+        ``.unwrap()`` unwraps it. Any other language's declared return type is
+        read by ``_written_returned_class``. Overloads that disagree
         on what they return type nothing.
         """
         symbol = self._symbols_by_id.get(callee_id)
@@ -1518,6 +1521,8 @@ class ReceiverTypingMixin(
             return self._go_returned_type_id(symbol, path)
         if symbol.language == "python":
             return self._python_call_returns(symbol, path, awaited)
+        if symbol.language == "rust":
+            return self._rust_returned_type_id(symbol, path, awaited)
         return self._written_returned_class(symbol, path, awaited)
 
     def _overloads_disagree(self, symbol: Symbol, path: str, argument_count: int | None) -> bool:
