@@ -59,6 +59,13 @@ _INDEX_FILES = (
     "index.svelte",
     "index.astro",
 )
+# The TypeScript sources a JS-extension specifier may name, in tsc's order.
+_TS_SOURCE_OF_JS = {
+    ".js": (".ts", ".tsx"),
+    ".jsx": (".tsx",),
+    ".mjs": (".mts",),
+    ".cjs": (".cts",),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -578,6 +585,13 @@ class TsconfigResolver:
         # 3. Index files (base is a directory).
         for index in _INDEX_FILES:
             rel = self._to_repo_relative(base / index)
+            if rel is not None and rel in self._path_set:
+                return rel
+
+        # 4. A JS extension naming its TS source (``src/a.service.js`` under
+        # ``module: nodenext``), the rewrite relative imports already apply.
+        for ts_ext in _TS_SOURCE_OF_JS.get(base.suffix, ()):
+            rel = self._to_repo_relative(base.with_suffix(ts_ext))
             if rel is not None and rel in self._path_set:
                 return rel
 

@@ -96,6 +96,27 @@ class TestBasicAliasResolution:
         result = resolver.resolve("@/app/layout.config", _importer(tmp_path, "app/page.tsx"))
         assert result == "app/layout.config.tsx"
 
+    def test_js_extension_names_its_ts_source(self, tmp_path: Path) -> None:
+        """``module: nodenext`` code imports ``src/a.service.js`` for ``src/a.service.ts``."""
+        resolver = _make_resolver(
+            tmp_path,
+            configs={"tsconfig.json": {"compilerOptions": {"paths": {"src/*": ["./src/*"]}}}},
+            path_set={
+                "src/a.service.ts",
+                "src/a.config.ts",
+                "src/view.tsx",
+                "src/m.mts",
+                "src/real.js",
+            },
+        )
+        importer = _importer(tmp_path, "src/main.ts")
+        assert resolver.resolve("src/a.service.js", importer) == "src/a.service.ts"
+        assert resolver.resolve("src/a.config.js", importer) == "src/a.config.ts"
+        assert resolver.resolve("src/view.js", importer) == "src/view.tsx"
+        assert resolver.resolve("src/m.mjs", importer) == "src/m.mts"
+        assert resolver.resolve("src/real.js", importer) == "src/real.js"
+        assert resolver.resolve("src/missing.js", importer) is None
+
     def test_exact_non_wildcard_mapping(self, tmp_path: Path) -> None:
         """paths: {'utils': ['./src/utils/index.ts']} — exact key, no wildcard."""
         resolver = _make_resolver(
