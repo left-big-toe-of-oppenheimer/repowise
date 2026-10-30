@@ -600,6 +600,9 @@ class ReceiverTypingMixin(
             return None if builtin_local and external_type_name(field) else (field, "field", class_file)
         if builtin_local:
             return None
+        getter = self._getter_type(class_file, class_id, name, language)
+        if getter is not None:
+            return getter, "field", class_file
         extended = self._extended_class_field(file_path, caller_id, name, language)
         if extended is not None:
             return extended
@@ -665,7 +668,7 @@ class ReceiverTypingMixin(
     ) -> tuple[str, str | None] | None:
         """``(declaring file, type)`` of the field *name* the nearest superclass declares.
 
-        Only where a language reads ancestors' fields (Java, Apex, C#). The
+        Only where a language reads ancestors' fields (Java, Apex, C#, Dart). The
         declaration scan skips a type it cannot read (``b.Reader x``,
         ``int[] x``), so the caller, its class and each superclass passed are
         also asked whether they declare the name at all: one that does hides
@@ -684,9 +687,18 @@ class ReceiverTypingMixin(
             fields = self._field_types_in(path, language).get(ancestor, {})
             if name in fields:
                 return path, fields[name]
+            getter = self._getter_type(path, ancestor, name, language)
+            if getter is not None:
+                return path, getter
             if self._declares_name(path, ancestor, name):
                 return None
         return None
+
+    def _getter_type(self, class_file: str, class_id: str, name: str, language: str) -> str | None:
+        """The type id a Dart getter *name* of *class_id* returns, read as a field would be."""
+        if language != "dart":
+            return None
+        return self._dart_getter_type_id(class_file, class_id, name)
 
     def _declares_name(self, file_path: str, owner_id: str, name: str) -> bool:
         """Does *owner_id*, a method or a class's own scope, declare *name* with any type?"""

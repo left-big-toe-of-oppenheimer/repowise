@@ -170,6 +170,7 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
         constructor=("_resolve_dart_named_constructor",),
         member_fallback=_TYPED_RECEIVER,
         member_bare_fallback=False,
+        inherited_fields=True,
     ),
     # TypeScript's typed fallback also walks a dotted receiver's fields.
     "typescript": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
