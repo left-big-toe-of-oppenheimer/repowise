@@ -641,6 +641,15 @@ def _noted_unfounded_claim(payload: dict, grade: _Grade, fallback_targets: list[
     return True
 
 
+def _split_names_note(split_names: dict[str, list[str]]) -> str:
+    """Name each definition of a question name the answer did not tell apart."""
+    parts = [f"{name} is defined in {', '.join(paths)}" for name, paths in sorted(split_names.items())]
+    return (
+        "Held at medium: " + "; ".join(parts) + ". The answer does not say which "
+        "definition it describes; check it is the one you need."
+    )
+
+
 async def _graded_payload(
     *,
     question: str,
@@ -688,6 +697,8 @@ async def _graded_payload(
         payload["grounding"] = "symbol_body"
     if _noted_unfounded_claim(payload, grade, fallback_targets):
         pass
+    elif grade.split_names:
+        payload["note"] = _split_names_note(grade.split_names)
     elif grade.admitted_gap:
         payload["note"] = (
             "Held at medium: the answer says part of the question is outside the "

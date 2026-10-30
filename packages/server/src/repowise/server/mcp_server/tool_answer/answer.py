@@ -620,6 +620,7 @@ async def _graded_payload(
         lead_off_top=cited.drops_top_hit(hits, answer_text),
         unindexed_names=retrieved.homonyms.get("unindexed", ()),
         absent_names=retrieved.homonyms.get("absent", ()),
+        split_names=retrieved.homonyms.get("split"),
     )
     payload = await build_synthesized_payload(
         question=ask.question,

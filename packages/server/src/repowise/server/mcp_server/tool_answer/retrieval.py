@@ -90,9 +90,15 @@ def serialize_candidates(hits: list[dict], *, limit: int = _CANDIDATE_LIMIT) -> 
 
 
 def serialize_candidate_files(hits: list[dict]) -> list[str]:
-    """Distinct openable file paths in rank order, paths only, no hydration."""
+    """Distinct openable file paths in rank order, paths only, no hydration.
+
+    A file only the 1-hop graph walk added is left out: it neighbours a top hit
+    but nothing in the question matched it, so it is not a file to open next.
+    """
     paths: list[str] = []
     for h in hits:
+        if h.get("_sources") == {"graph_expand"}:
+            continue
         path = hit_file_path(h)
         if path and path not in paths:
             paths.append(path)

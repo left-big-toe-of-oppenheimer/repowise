@@ -101,7 +101,7 @@ def _is_plumbing(path: str) -> bool:
     ``__init__.py`` re-exports and test modules bridge unrelated files in the
     graph (a test imports both ends of the codebase), so they make good BFS
     coincidences and bad injected answers. Kept out of anchors and injection;
-    they may still be traversed as interior nodes.
+    ``__init__.py`` may still be traversed as an interior node; a test may not.
 
     Test material means the union, fixtures included: a factory module bridges
     the graph exactly the way a test does. The rules come from
@@ -276,7 +276,9 @@ def _bfs_path(adj: dict[str, list[str]], src: str, dst: str, max_depth: int) -> 
         nxt: list[str] = []
         for node in frontier:
             for nb in adj.get(node, ()):
-                if nb in parents:
+                # A test imports both ends of the codebase, so a path through
+                # one connects files that do not call each other.
+                if nb in parents or is_test_related_path(nb):
                     continue
                 parents[nb] = node
                 visited += 1

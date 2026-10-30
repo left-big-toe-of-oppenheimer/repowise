@@ -26,6 +26,7 @@ from repowise.server.mcp_server._answer_context import (
     is_why_question as _is_why_question,
 )
 from repowise.server.mcp_server._meta import _normalize_target_path
+from repowise.server.mcp_server._query_terms import split_humps
 from repowise.server.mcp_server._retrieval_rank import window_term_weight
 from repowise.server.mcp_server.tool_answer.config import (
     _AGREEMENT_RANK_GAP,
@@ -773,6 +774,8 @@ class _Grade(NamedTuple):
     admitted_gap: str | None = None
     #: Code names the question writes that nothing in the repository defines or writes.
     absent_names: tuple[str, ...] = ()
+    #: Question names defined in several files the answer does not tell apart, with those files.
+    split_names: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -802,6 +805,7 @@ class _GradeState:
     admitted_gap: str | None = None
     unindexed_names: set[str] = field(default_factory=set)
     absent_names: tuple[str, ...] = ()
+    split_names: dict[str, list[str]] = field(default_factory=dict)
 
 
 def _earned_high(
@@ -1003,6 +1007,46 @@ def _identifier_gate(s: _GradeState) -> None:
         s.confidence = "medium"
 
 
+def _split_name_gate(s: _GradeState) -> None:
+    """A question-named name defined in several files, answered as if it were one.
+
+    Settled when the answer names every defining file, or when a question word
+    is a path word of exactly one of them and the answer names that one.
+    """
+    if s.confidence != "high":
+        s.split_names = {}
+        return
+    s.split_names = {
+        name: paths
+        for name, paths in s.split_names.items()
+        if not _split_settled(name, paths, s.question, s.answer_text, s.citations)
+    }
+    if s.split_names:
+        s.confidence = "medium"
+
+
+def _split_settled(
+    name: str, paths: list[str], question: str, answer_text: str, citations: list[str]
+) -> bool:
+    cited = {_normalize_target_path(c) for c in citations}
+    basenames = Counter(p.rsplit("/", 1)[-1] for p in paths)
+
+    def named(path: str) -> bool:
+        base = path.rsplit("/", 1)[-1]
+        return path in cited or path in answer_text or (basenames[base] == 1 and base in answer_text)
+
+    if all(named(p) for p in paths):
+        return True
+    asked = _path_words(question) - _path_words(name)
+    picked = [p for p in paths if asked & _path_words(p.rsplit(".", 1)[0])]
+    return len(picked) == 1 and named(picked[0])
+
+
+def _path_words(text: str) -> set[str]:
+    """Lower-case words of a path or sentence, at least three letters long."""
+    return {w for w in re.split(r"[^a-z0-9]+", split_humps(text).lower()) if len(w) >= 3}
+
+
 def _value_gate(s: _GradeState) -> None:
     """On a value question every asserted number must appear in the retrieved material.
 
@@ -1123,6 +1167,7 @@ _GRADE_GATES = (
     _absent_name_gate,
     _admitted_gap_gate,
     _identifier_gate,
+    _split_name_gate,
     _value_gate,
     _citation_gate,
     _named_file_gate,
@@ -1149,6 +1194,7 @@ def _grade_answer(
     lead_off_top: str | None = None,
     unindexed_names: Collection[str] = (),
     absent_names: Collection[str] = (),
+    split_names: dict[str, list[str]] | None = None,
 ) -> _Grade:
     """Grade the synthesised answer through the gate cascade, in order.
 
@@ -1162,6 +1208,8 @@ def _grade_answer(
     ``lead_off_top`` is ``AnswerFiles.drops_top_hit``. ``unindexed_names`` are
     question identifiers no symbol carries; ``absent_names`` the code-shaped
     ones no production line writes either (``unindexed_question_names``).
+    ``split_names`` maps a question name to the files that define it, for names
+    defined in more than one.
     """
     dominant = dominance is not None
     top_score = _confidence_score(hits[0]) if hits else 0.0
@@ -1176,6 +1224,7 @@ def _grade_answer(
     s = _GradeState(
         unindexed_names=set(unindexed_names),
         absent_names=tuple(absent_names),
+        split_names=dict(split_names or {}),
         question=question,
         question_ids=question_ids,
         answer_text=answer_text,
@@ -1198,6 +1247,7 @@ def _grade_answer(
         high_reason = dominance or earned
     return _Grade(
         absent_names=s.absent_names,
+        split_names=s.split_names,
         confidence=s.confidence,
         high_reason=high_reason,
         second_score=_confidence_score(hits[1]) if len(hits) >= 2 else 0.0,

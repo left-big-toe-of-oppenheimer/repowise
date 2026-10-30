@@ -249,8 +249,10 @@ async def _anchor_symbol_hits(
 
     Returns ``(hits, homonyms)``; ``hits`` is re-sorted by score (mutated in
     place). ``homonyms = {"union": {name: [def_dict, ...]}, "qualified_miss":
-    [name, ...], "unindexed": [name, ...], "absent": [name, ...]}``: the
-    question names no symbol carries, and those of them no code writes either.
+    [name, ...], "unindexed": [name, ...], "absent": [name, ...], "split":
+    {name: [path, ...]}}``: the question names no symbol carries, those of them
+    no code writes either, and the names production code defines in more than
+    one file.
     """
     homonyms: dict[str, Any] = {"union": {}, "qualified_miss": []}
     if not question_ids:
@@ -264,7 +266,9 @@ async def _anchor_symbol_hits(
     )
     by_name: dict[str, list] = {}
     indexed_names: set[str] = set()
-    for row in res.scalars().all():
+    rows = list(res.scalars().all())
+    homonyms["split"] = _split_definitions(rows)
+    for row in rows:
         indexed_names.add(row.name)
         # A pathless row names nothing the reply can point at: drop it from
         # every route below.
@@ -310,6 +314,20 @@ async def _anchor_symbol_hits(
         await _anchor_chosen_symbols(hits, rows, _verified_dict, named_by=token)
     hits.sort(key=lambda h: h.get("score", 0.0), reverse=True)
     return hits, homonyms
+
+
+def _split_definitions(rows: list) -> dict[str, list[str]]:
+    """Names defined in more than one production file, with those files.
+
+    Any kind counts: a constant defined twice is as ambiguous as a function.
+    Test and doc copies do not, and overloads in one file are one place.
+    """
+    files: dict[str, set[str]] = {}
+    for row in rows:
+        path = row.file_path
+        if path and not is_test_related_path(path, row.language):
+            files.setdefault(row.name, set()).add(path)
+    return {name: sorted(paths) for name, paths in files.items() if len(paths) > 1}
 
 
 class _TopicGuard:
@@ -396,14 +414,16 @@ async def _trusted_over_topic(
 ) -> dict[str, list]:
     """*by_name* without the defs an exact name may not anchor (see :class:`_TopicGuard`).
 
-    A def whose parent the question names is the one it means, so it stays.
+    A def whose parent the question names is the one it means, so it stays, and
+    so does a name the question writes as the owner of a member (``Client.get``).
     """
     kept: dict[str, list] = {}
     for name, cands in by_name.items():
+        owner = any(q.startswith(f"{name}.") for q in question_ids)
         trusted = [
             c
             for c in cands
-            if _question_names_parent(c, question_ids) or await guard.trusts(name, c)
+            if owner or _question_names_parent(c, question_ids) or await guard.trusts(name, c)
         ]
         if trusted:
             kept[name] = trusted
