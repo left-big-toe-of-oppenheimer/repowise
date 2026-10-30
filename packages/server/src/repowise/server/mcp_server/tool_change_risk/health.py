@@ -111,10 +111,17 @@ def _delta_service(repo_path: str) -> ChangeHealthDeltaService:
     return service
 
 
+#: The last dependents read per checkout, with the index state it was read
+#: at. Counting them reads every graph edge, so a call on an unchanged index
+#: reuses the count. Readers copy it before changing it.
+_DEPENDENTS: OrderedDict[str, tuple[str, dict[str, int]]] = OrderedDict()
+
+
 async def _index_dependents(ctx: Any) -> dict[str, int] | None:
     """The index's dependents count per file, or ``None`` with no readable index."""
     from repowise.core.analysis.change_health.index_context import index_dependents
     from repowise.core.persistence.database import get_session
+    from repowise.server.mcp_server._index_state import index_state_key
 
     session_factory = getattr(ctx, "session_factory", None)
     if session_factory is None:
@@ -122,7 +129,19 @@ async def _index_dependents(ctx: Any) -> dict[str, int] | None:
     try:
         async with get_session(session_factory) as session:
             repository = await _pkg._get_repo(session)
-            return await index_dependents(session, repository.id)
+            # The checkout too: a copied index keeps the repository id.
+            checkout = getattr(ctx, "path", "")
+            key = f"{checkout}|{repository.id}"
+            state = index_state_key(repository)
+            held = _DEPENDENTS.get(key)
+            if held is not None and held[0] == state:
+                return held[1]
+            counts = await index_dependents(session, repository.id)
+        _DEPENDENTS[key] = (state, counts)
+        _DEPENDENTS.move_to_end(key)
+        while len(_DEPENDENTS) > _DELTA_SERVICE_CAPACITY:
+            _DEPENDENTS.popitem(last=False)
+        return counts
     except Exception as exc:
         # An input that sharpens the delta, never a reason to fail the call.
         log.warning("change_health_index_dependents_failed", error=str(exc))

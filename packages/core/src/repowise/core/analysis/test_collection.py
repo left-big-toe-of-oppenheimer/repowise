@@ -88,9 +88,22 @@ def read_checkout(repo_path, head: str | None = None) -> Checkout:
     ]
     roots = read_pytest_roots((p, t) for p, t in texts if Path(p).name in PYTEST_CONFIG_NAMES)
     at_head: list[frozenset[str]] = []
+    tracked_set = frozenset(tracked)
+    gone: list[frozenset[str] | None] = []
+
+    def on_disk(path: str) -> bool:
+        # A tracked file is present unless git lists it deleted: one git call
+        # instead of a stat per named test, thousands on a large suite.
+        # Ceiling: a sparse checkout's skipped files count as present.
+        if path in tracked_set:
+            if not gone:
+                gone.append(git_refs.deleted_paths(str(root)))
+            if gone[0] is not None:
+                return path not in gone[0]
+        return (root / path).is_file()
 
     def exists(path: str) -> bool:
-        if (root / path).is_file():
+        if on_disk(path):
             return True
         if head is None:
             return False
@@ -246,8 +259,9 @@ async def collect(
     without them no conftest route is narrowed. *read_source* (``Checkout.read``)
     lets that narrowing read the modules a conftest takes names from.
     """
-    from ..persistence.crud import get_health_metrics, get_test_coverage_summary
+    from ..persistence.crud import get_test_coverage_summary
     from ..persistence.crud.analysis.coverage_map import map_is_truncated
+    from ..persistence.crud.analysis.health.metrics import health_file_paths
 
     out = empty_result(len(change.files) + len(change.deleted))
     if not out["changed_files"]:
@@ -262,7 +276,7 @@ async def collect(
 
     # Repo file keys back the filename-pattern fallback (same source the
     # aggregate coverage ingest resolves against).
-    repo_keys = {m.file_path for m in await get_health_metrics(session, repo_id)}
+    repo_keys = await health_file_paths(session, repo_id)
     # git runs off the event loop: a server shares it with other requests.
     routes = (
         []
