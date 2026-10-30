@@ -69,13 +69,18 @@ from .refactoring import (
     performance_fix_suggestions,
     rank_suggestions,
 )
-from .refactoring.graph_signals import build_file_scc_index, build_methods_by_file
+from .refactoring.graph_signals import (
+    build_file_scc_index,
+    build_methods_by_file,
+    build_split_partial_types,
+)
 from .repo_tests import RepoTestIndex
 from .repo_tests import _has_paired_test_file as _has_paired_test_file
 from .repo_tests import _path_basenames as _path_basenames
 from .scope import scores_language
 from .scoring import compute_kpis
 from .source_reader import SourceReader, disk_source_reader
+from .sql_complexity import configured_sql_dialect
 from .walk_cache import HealthWalkCache
 
 if TYPE_CHECKING:
@@ -87,7 +92,8 @@ log = structlog.get_logger(__name__)
 # — a new or removed biomarker, a changed attribution rule, a different finding
 # shape. ``repowise update`` compares it against the value stored in state.json
 # and re-scores on mismatch (see ``update_cmd.persistence.full_rescore_due``),
-# instead of waiting out the 7-day decay timer.
+# instead of waiting out the 7-day decay timer. Cached walks and token streams
+# do not read it: they key on their own code (``walk_cache.WALK_INPUTS``).
 #
 # Reach: a single-repo ``repowise update`` checks it before the "already up to
 # date" return, so a checkout with no new commits re-scores on its next update
@@ -102,8 +108,11 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# v44: maintainability, performance and coverage detectors stop firing on
-# several idiomatic patterns, and refactoring gains and the headline split change.
+# v44: this release's maintainability, performance and coverage detectors stop
+# firing on several idiomatic patterns, ternary dispatch chains in Java, C, C++,
+# C#, Dart, Objective-C and PHP keep each decision without nesting their
+# else-arms, and refactoring gains and the headline split change. Re-score
+# stored metrics so old findings do not survive the new rules.
 #
 # Earlier bumps and their reasons: ``git log -S"HEALTH_ANALYZER_VERSION =" -p``
 # on this file.
@@ -284,13 +293,13 @@ class HealthAnalyzer:
         # pass then re-tokenizes everything, exactly as before.
         self.duplication_cache_dir = duplication_cache_dir
         # The walk result for a file is a function of its bytes, its language
-        # and the walker's version, so it is kept beside the index like the
+        # and the walker's code, so it is kept beside the index like the
         # parse trees and the clone windows are. Absent without a cache dir.
         # A *walk_cache* passed in is the caller's: it loads and saves it, so
         # several passes (both sides of a comparison) share one file.
         self._owns_walk_cache = walk_cache is None
         self._walk_cache: HealthWalkCache | None = walk_cache or (
-            HealthWalkCache(duplication_cache_dir, HEALTH_ANALYZER_VERSION)
+            HealthWalkCache(duplication_cache_dir)
             if duplication_cache_dir is not None
             else None
         )
@@ -433,7 +442,9 @@ class HealthAnalyzer:
             timings,
         )
         with timed(timings, "analysis.health.walk"):
-            walked = self._walk_files(self._target_files(changed_set), run.vocab, on_step)
+            walked = self._walk_files(
+                self._target_files(changed_set), run.vocab, on_step, partial=changed_set is not None
+            )
         return self._score(
             run,
             walked,
@@ -492,7 +503,9 @@ class HealthAnalyzer:
                 metrics=[],
                 kpis={},
             )
-        walked = await self._walk_files_async(target_files, run.vocab, on_step, max_workers)
+        walked = await self._walk_files_async(
+            target_files, run.vocab, on_step, max_workers, partial=changed_set is not None
+        )
         return self._score(
             run,
             walked,
@@ -573,10 +586,16 @@ class HealthAnalyzer:
             return FileComplexity(functions=[], classes=[])
 
     def _walk_files(
-        self, targets: list[Any], vocab: AssertVocabulary, on_step: Any | None
+        self,
+        targets: list[Any],
+        vocab: AssertVocabulary,
+        on_step: Any | None,
+        *,
+        partial: bool = False,
     ) -> list[tuple[Any, FileComplexity]]:
         """Walk every target before any biomarker runs, so the repo-wide
-        percentiles are computed once over the whole walked set."""
+        percentiles are computed once over the whole walked set. *partial*
+        (a changed-files pass) keeps the cached walks of the files it skipped."""
         self._load_walk_cache()
         walked: list[tuple[Any, FileComplexity]] = []
         for pf in targets:
@@ -585,7 +604,7 @@ class HealthAnalyzer:
             # evaluate).
             if on_step:
                 on_step(pf.file_info.path)
-        self._save_walk_cache()
+        self._save_walk_cache(keep_unused=partial)
         return walked
 
     async def _walk_files_async(
@@ -594,6 +613,8 @@ class HealthAnalyzer:
         vocab: AssertVocabulary,
         on_step: Any | None,
         max_workers: int | None,
+        *,
+        partial: bool = False,
     ) -> list[tuple[Any, FileComplexity]]:
         """:meth:`_walk_files` in worker threads: tree-sitter parsing releases
         the GIL, so this is real parallelism."""
@@ -610,7 +631,7 @@ class HealthAnalyzer:
             return pf, fcx
 
         walked = list(await asyncio.gather(*[_one(pf) for pf in targets]))
-        self._save_walk_cache()
+        self._save_walk_cache(keep_unused=partial)
         return walked
 
     def _score(
@@ -702,6 +723,7 @@ class HealthAnalyzer:
             active_contributors=_compute_repo_active_contributors(self.git_meta_map),
             file_scc_index=build_file_scc_index(self.graph),
             methods_by_file=build_methods_by_file(self.graph),
+            split_partial_types=build_split_partial_types(self.graph),
             dataflow_cache=dataflow_cache,
             function_tests=function_tests,
             paired_test_files=paired_test_index(self.test_index.all_test_files()),
@@ -892,6 +914,7 @@ class HealthAnalyzer:
         if source is None:
             return FileComplexity(functions=[], classes=[])
         self._origins[pf.file_info.path] = self._origin(pf, source)
+        sql_dialect = configured_sql_dialect(pf.file_info)
         key = None
         if self._walk_cache is not None:
             from repowise.core.ingestion import compute_content_hash
@@ -900,7 +923,10 @@ class HealthAnalyzer:
             # The grammar, not the language: a .tsx file and a byte-identical
             # .ts file are walked by different grammars and must key apart.
             key = HealthWalkCache.key(
-                grammar_tag_for(language, path), compute_content_hash(source), vocab.key
+                grammar_tag_for(language, path),
+                compute_content_hash(source),
+                vocab.key,
+                sql_dialect or "",
             )
             cached = self._walk_cache.get(key)
             if cached is not None:
@@ -910,7 +936,7 @@ class HealthAnalyzer:
             # produces routine CCN + the sql_* smell hits instead.
             from .sql_complexity import walk_sql_file
 
-            fcx = walk_sql_file(pf.file_info, source)
+            fcx = walk_sql_file(source, sql_dialect)
         else:
             fcx = walk_file(path, language, source, vocab.names)
         if key is not None and self._walk_cache is not None:
@@ -964,10 +990,10 @@ class HealthAnalyzer:
         if self._walk_cache is not None and self._owns_walk_cache:
             self._walk_cache.load()
 
-    def _save_walk_cache(self) -> None:
+    def _save_walk_cache(self, *, keep_unused: bool = False) -> None:
         """Persist the walk entries this pass used or produced, if any."""
         if self._walk_cache is not None and self._owns_walk_cache:
-            self._walk_cache.save()
+            self._walk_cache.save(keep_unused=keep_unused)
             log.debug(
                 "health_walk_cache",
                 hits=self._walk_cache.hits,
