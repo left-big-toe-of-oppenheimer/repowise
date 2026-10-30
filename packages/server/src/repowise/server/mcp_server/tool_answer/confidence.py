@@ -26,7 +26,7 @@ from repowise.server.mcp_server._answer_context import (
     is_why_question as _is_why_question,
 )
 from repowise.server.mcp_server._meta import _normalize_target_path
-from repowise.server.mcp_server._query_terms import split_humps
+from repowise.server.mcp_server._query_terms import STOPWORDS, split_humps
 from repowise.server.mcp_server._retrieval_rank import window_term_weight
 from repowise.server.mcp_server.tool_answer.config import (
     _AGREEMENT_RANK_GAP,
@@ -1044,8 +1044,10 @@ def _split_settled(name: str, paths: list[str], question: str, answer_text: str)
 
 
 def _path_words(text: str) -> set[str]:
-    """Lower-case words of a path or sentence, at least three letters long."""
-    return {w for w in re.split(r"[^a-z0-9]+", split_humps(text).lower()) if len(w) >= 3}
+    """Lower-case words of a path or sentence, stopwords dropped. Two letters
+    count: ``go`` or ``ui`` is often the directory that tells definitions apart."""
+    words = re.split(r"[^a-z0-9]+", split_humps(text).lower())
+    return {w for w in words if len(w) >= 2 and w not in STOPWORDS}
 
 
 def _value_gate(s: _GradeState) -> None:
