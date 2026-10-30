@@ -296,6 +296,7 @@ class HarvestedComment:
     end_line: int
     text: str
     strength: int  # number of distinct rationale markers present
+    causal: bool = False  # carries a strong CAUSAL_MARKERS reason
 
 
 # ---------------------------------------------------------------------------
@@ -624,6 +625,7 @@ def harvest_file_rationale(
                 end_line=end,
                 text=_truncate(body),
                 strength=marker_strength(body),
+                causal=has_causal_marker(body),
             )
         )
 

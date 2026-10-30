@@ -39,12 +39,13 @@ from pathlib import Path
 from typing import Any
 
 from repowise.core.analysis.decisions.rationale_comments import (
-    CODE_EXTENSIONS,
     RATIONALE_MARKERS,
     extract_comment_blocks,
-    harvest_file_rationale,
 )
-from repowise.core.code_origin import code_origin
+from repowise.core.analysis.decisions.rationale_harvest import (
+    harvest_repo_rationale,
+    read_repo_text,
+)
 from repowise.core.exclusion import build_exclude_spec, is_excluded
 from repowise.server.mcp_server._why_relevance import (
     clears_floor,
@@ -279,21 +280,6 @@ def can_lead_answer(row: dict) -> bool:
     return len(set(row.get("matched_terms") or ())) >= _LEAD_MIN_MATCHES
 
 
-def _read_text(repo_root: Path, file_path: str) -> str | None:
-    """Read a repo file's live text, refusing paths outside the root."""
-    try:
-        abs_path = (repo_root / file_path).resolve()
-        abs_path.relative_to(repo_root.resolve())
-    except (ValueError, OSError):
-        return None
-    try:
-        if abs_path.stat().st_size > _MAX_FILE_LINES * 400:
-            return None
-        return abs_path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-
-
 def _truncate_block(comment: str) -> str:
     """Bound a single surfaced block so a long docstring can't flood the
     payload."""
@@ -307,7 +293,7 @@ def _file_blocks(
 ) -> list[tuple[str, int, int, str, frozenset[str], frozenset[str]]]:
     """``(path, start, end, comment, words, own words)`` per comment block of *path*."""
     ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
-    text = _read_text(root, path)
+    text = read_repo_text(root, path)
     if text is None or text.count("\n") > _MAX_FILE_LINES:
         return []
     try:
@@ -534,12 +520,10 @@ def grep_comment_candidates(
     return ranked[:max_files]
 
 
-# One repository's harvest, keyed on (root, HEAD, plain): harvesting reads every
-# tracked code file (about 2s cold on a 3,000-file repository), so a session
-# asking several questions pays it once. Ceiling: edits since HEAD are not seen
-# until the next commit; the path-scoped miner above stays live for those.
+# One repository's harvest, keyed on (root, HEAD, plain), so a session asking
+# several questions assembles it once. The index keeps each file's rows under
+# its blob id, so only files changed since the last index write are read.
 _HARVEST_CACHE: dict[tuple[str, str, bool], list[dict]] = {}
-_MAX_HARVEST_FILES = 20_000
 
 
 def _head(root: Path) -> str | None:
@@ -557,53 +541,6 @@ def _head(root: Path) -> str | None:
     return proc.stdout.strip() if proc.returncode == 0 else None
 
 
-def _harvest_repo(root: Path, plain: bool = False) -> list[dict]:
-    """Every tracked file's strong-marker comments, strongest first per file.
-
-    ``harvest_file_rationale`` with its defaults: a causal marker is required
-    and docstrings are skipped. That is the precision bar a comment must clear
-    to be served for a question naming no file, where nothing else vouches for
-    it. These are never decisions (#751); they are served as comments.
-
-    *plain* keeps every production comment, marked or not, for a store with no
-    ruling. Ceiling: the whole set is cached per HEAD; a size cap is the upgrade.
-    """
-    try:
-        proc = subprocess.run(
-            ["git", "--no-pager", "ls-files", "-z"],
-            cwd=str(root),
-            capture_output=True,
-            stdin=subprocess.DEVNULL,
-            timeout=_GREP_TIMEOUT_S,
-        )
-    except Exception:
-        return []
-    if proc.returncode != 0:
-        return []
-    spec = build_exclude_spec(root)
-    rows: list[dict] = []
-    paths = [p for p in proc.stdout.decode("utf-8", "replace").split("\0") if p]
-    for path in paths[:_MAX_HARVEST_FILES]:
-        ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
-        if ext not in CODE_EXTENSIONS or is_excluded(path, spec):
-            continue
-        text = _read_text(root, path)
-        if text is None:
-            continue
-        if plain:
-            # Without a marker, only shipped code's comments describe its reasons.
-            if code_origin(path, text) != "production":
-                continue
-            harvested = harvest_file_rationale(
-                text, ext, max_per_file=_MAX_FILE_LINES, require_marker=False
-            )
-        else:
-            harvested = harvest_file_rationale(text, ext)
-        for h in harvested:
-            rows.append({"path": path, "lines": [h.start_line, h.end_line], "comment": h.text})
-    return rows
-
-
 def repo_rationale(
     repo_root: Any, query: str, *, max_results: int = 3, plain: bool = False
 ) -> list[dict]:
@@ -613,7 +550,7 @@ def repo_rationale(
     the decision store's own relevance floor, with rarity taken over the whole
     harvest, so a comment is served only when it carries most of the
     question's weighted vocabulary. Rows have the ``mine_rationale`` shape.
-    *plain* admits comments with no marker (see :func:`_harvest_repo`).
+    *plain* admits comments with no marker (see :func:`harvest_repo_rationale`).
     Best-effort: ``[]`` on any failure.
     """
     if not repo_root or not query:
@@ -626,7 +563,7 @@ def repo_rationale(
         key = (str(root.resolve()), head, plain)
         if key not in _HARVEST_CACHE:
             _HARVEST_CACHE.clear()
-            _HARVEST_CACHE[key] = _harvest_repo(root, plain)
+            _HARVEST_CACHE[key] = harvest_repo_rationale(root, plain)
         return floor_ranked(query, _HARVEST_CACHE[key], lambda r: r["comment"], max_results)
     except Exception as exc:  # never let the harvest break a tool
         _log.debug("repo rationale harvest failed: %s", exc)
