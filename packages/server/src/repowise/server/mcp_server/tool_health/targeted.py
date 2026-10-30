@@ -6,13 +6,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from repowise.core.analysis.finding_registry import split_held
-from repowise.core.analysis.health.aggregation import module_rollups as _module_rollups
+from repowise.core.analysis.health.aggregation import (
+    group_rollup,
+)
 from repowise.core.analysis.health.trends import file_trend
 from repowise.server.mcp_server.tool_health.loading import HealthData, history_of
 from repowise.server.mcp_server.tool_health.paging import Pager
 from repowise.server.mcp_server.tool_health.request import HealthRequest
 from repowise.server.mcp_server.tool_health.serialize import _serialize_finding, _serialize_metric
-from repowise.server.mcp_server.tool_health.targets import _unresolved_targets
+from repowise.server.mcp_server.tool_health.targets import _clean_module_target, _unresolved_targets
 
 
 @dataclass(frozen=True)
@@ -31,10 +33,27 @@ def build_targeted(
     pop = data.pop
     findings_total = data.findings.findings_total
     metric_payload = _metric_payload(data)
-    module_set = set(req.module_targets)
-    module_rollup = _module_rollups(
-        [m for m in pop.all_metrics if m.module in module_set], data.deductions
-    )
+    module_rows: list[dict[str, Any]] = []
+    top_level_modules = {m.module for m in pop.all_metrics if getattr(m, "module", None)}
+    for name in req.module_targets:
+        clean_name = _clean_module_target(name)
+        if name in top_level_modules or clean_name in top_level_modules:
+            group = [
+                m
+                for m in pop.all_metrics
+                if (m.module == name or m.module == clean_name)
+            ]
+        else:
+            prefix = f"{clean_name}/"
+            group = [
+                m
+                for m in pop.all_metrics
+                if getattr(m, "score", None) is not None and m.file_path.startswith(prefix)
+            ]
+        if group:
+            module_rows.append({"module": name, **group_rollup(group, data.deductions)})
+    module_rows.sort(key=lambda row: (row["average_health"], row["module"]))
+    module_rollup = module_rows
     result: dict[str, Any] = {
         "mode": "targets",
         "targets": req.raw_targets,

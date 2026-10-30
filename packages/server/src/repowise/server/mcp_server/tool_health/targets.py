@@ -9,6 +9,14 @@ from repowise.core.analysis.health.complexity.languages import NO_DIALECT_STATUS
 from repowise.server.repo_paths import missing_path_hint
 
 
+def _clean_module_target(target: str) -> str:
+    """Normalize a module target: strip whitespace, leading './' and surrounding slashes."""
+    cleaned = target.strip()
+    while cleaned.startswith("./"):
+        cleaned = cleaned[2:]
+    return cleaned.strip("/")
+
+
 def _expand_module_targets(
     metrics: list[Any], module_targets: list[str], file_targets: list[str]
 ) -> tuple[list[str], set[str]]:
@@ -21,11 +29,20 @@ def _expand_module_targets(
     if not module_targets:
         return file_targets, matched_modules
     expanded = list(file_targets)
-    module_set = set(module_targets)
-    for m in metrics:
-        if m.module in module_set:
-            matched_modules.add(m.module)
-            expanded.append(m.file_path)
+    top_level_modules = {m.module for m in metrics if getattr(m, "module", None)}
+    for name in module_targets:
+        clean_name = _clean_module_target(name)
+        if name in top_level_modules or clean_name in top_level_modules:
+            for m in metrics:
+                if m.module == name or m.module == clean_name:
+                    matched_modules.add(name)
+                    expanded.append(m.file_path)
+        else:
+            prefix = f"{clean_name}/"
+            for m in metrics:
+                if getattr(m, "score", None) is not None and m.file_path.startswith(prefix):
+                    matched_modules.add(name)
+                    expanded.append(m.file_path)
     return sorted(set(expanded)), matched_modules
 
 

@@ -512,6 +512,32 @@ async def test_get_health_module_target_resolves_to_its_files(setup_mcp, health_
 
 
 @pytest.mark.asyncio
+async def test_get_health_nested_module_prefix_matching(setup_mcp, health_data):
+    """A nested module target matches files under its directory prefix and strips ./ and /."""
+    from repowise.server.mcp_server import get_health
+
+    # 1. Nested directory prefix matches files under it and keeps caller's target name in summary
+    result = await get_health(targets=["module:src/auth"])
+    assert [m["file_path"] for m in result["metrics"]] == ["src/auth/service.py"]
+    assert "unresolved" not in result
+    assert [m["module"] for m in result["modules"]] == ["src/auth"]
+
+    # 2. Leading ./ and trailing / are stripped
+    result_slashes = await get_health(targets=["module:./src/auth/"])
+    assert [m["file_path"] for m in result_slashes["metrics"]] == ["src/auth/service.py"]
+    assert "unresolved" not in result_slashes
+
+    # 3. Sibling prefix with shared characters does not match
+    sibling = await get_health(targets=["module:src/aut"])
+    assert sibling["unresolved"] == [{"target": "module:src/aut", "reason": "no_such_module"}]
+
+    # 4. Unknown directory yields no_such_module and known_modules contains top-level modules
+    unknown = await get_health(targets=["module:src/unknown"])
+    assert unknown["unresolved"] == [{"target": "module:src/unknown", "reason": "no_such_module"}]
+    assert unknown["known_modules"] == ["auth", "db"]
+
+
+@pytest.mark.asyncio
 async def test_get_health_findings_capped_with_honest_total(setup_mcp, health_data):
     """limit governs findings too, and the total says what was cut."""
     from repowise.server.mcp_server import get_health
