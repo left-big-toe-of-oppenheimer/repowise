@@ -311,10 +311,8 @@ class UnusedExportPass:
         """
         node = file_ctx.node
         sym_name = sym.get("name", "")
-        # ``export { local as alias }`` publishes the symbol under the
-        # alias; importers carry the alias in ``imported_names``.
-        export_alias = self.ctx._ts_export_aliases.get(str(node), {}).get(sym_name)
-        has_importers = any(
+        export_alias = self._published_alias(str(node), sym_name)
+        has_importers = export_alias in self.ctx._bound_export_names.get(str(node), ()) or any(
             sym_name in imported_names
             or "*" in imported_names
             or (export_alias is not None and export_alias in imported_names)
@@ -345,6 +343,17 @@ class UnusedExportPass:
         if self._member_is_used(sym_id, sym.get("language")):
             return True, None
         return False, unsatisfied_guard
+
+    def _published_alias(self, path: str, sym_name: str) -> str | None:
+        """The name *sym_name* is exported under, when not its own.
+
+        ``export { local as alias }`` publishes the alias; a default export
+        publishes ``default``, which importers bind under any local name.
+        """
+        alias = self.ctx._ts_export_aliases.get(path, {}).get(sym_name)
+        if alias is None and self.ctx._ts_default_exports.get(path) == sym_name:
+            return "default"
+        return alias
 
     def _make_unused_export_finding(
         self,

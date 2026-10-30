@@ -99,8 +99,10 @@ from .source_prepasses import (  # noqa: F401  (moved scans re-exported)
     _BUNDLER_CONFIG_STEMS,
     _RELATIVE_PATH_STRING_RE,
     _TS_PROBE_SUFFIXES,
+    _find_bound_export_names,
     _find_bundler_alias_targets,
     _find_jsx_namespace_files,
+    _find_ts_default_exports,
     _find_ts_export_aliases,
     _posix_normpath,
 )
@@ -236,6 +238,9 @@ class DeadCodeAnalyzer:
         self._ts_export_aliases: dict[str, dict[str, str]] = _find_ts_export_aliases(
             parsed_files or {}
         )
+        # A default import binds any local name, so these two link it back.
+        self._ts_default_exports = _find_ts_default_exports(parsed_files or {}, source_map)
+        self._bound_export_names = _find_bound_export_names(parsed_files or {})
         # Lazily-built package-directory maps for Go / JVM / C-C++, the one
         # piece of the rescue state that costs a graph scan. Built on first use
         # so a graph that never reaches the unreachable-files pass never pays
