@@ -64,6 +64,12 @@ def test_an_answer_naming_every_definition_keeps_high() -> None:
     assert grade.split_names == {}
 
 
+def test_a_file_named_for_another_reason_does_not_settle_it() -> None:
+    answer = f"{_ONE} The pool is imported by `{_SSG}`."
+    grade = _grade("DEFAULT_CONCURRENCY", answer, citations=(_POOL, _SSG))
+    assert grade.confidence == "medium"
+
+
 def test_a_question_word_picking_one_definition_settles_it() -> None:
     answer = f"In `{_SSG}`, `DEFAULT_CONCURRENCY` is `2`."
     ssg_first = [{**_HITS[1], "score": 4.6, "summary": "SSG helper defaults."}, _HITS[0]]

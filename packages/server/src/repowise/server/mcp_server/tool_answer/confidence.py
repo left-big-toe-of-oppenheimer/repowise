@@ -1010,8 +1010,10 @@ def _identifier_gate(s: _GradeState) -> None:
 def _split_name_gate(s: _GradeState) -> None:
     """A question-named name defined in several files, answered as if it were one.
 
-    Settled when the answer names every defining file, or when a question word
-    is a path word of exactly one of them and the answer names that one.
+    Settled when the answer names every defining file in a sentence that names
+    the symbol, or when a question word is a path word of exactly one of them
+    and the answer names that one so. A file the answer mentions for another
+    reason (an importer) does not count.
     """
     if s.confidence != "high":
         s.split_names = {}
@@ -1019,21 +1021,20 @@ def _split_name_gate(s: _GradeState) -> None:
     s.split_names = {
         name: paths
         for name, paths in s.split_names.items()
-        if not _split_settled(name, paths, s.question, s.answer_text, s.citations)
+        if not _split_settled(name, paths, s.question, s.answer_text)
     }
     if s.split_names:
         s.confidence = "medium"
 
 
-def _split_settled(
-    name: str, paths: list[str], question: str, answer_text: str, citations: list[str]
-) -> bool:
-    cited = {_normalize_target_path(c) for c in citations}
+def _split_settled(name: str, paths: list[str], question: str, answer_text: str) -> bool:
     basenames = Counter(p.rsplit("/", 1)[-1] for p in paths)
+    name_re = _word_re(name)
+    about = [x for x in _sentences(answer_text) if name_re.search(x)]
 
     def named(path: str) -> bool:
         base = path.rsplit("/", 1)[-1]
-        return path in cited or path in answer_text or (basenames[base] == 1 and base in answer_text)
+        return any(path in x or (basenames[base] == 1 and base in x) for x in about)
 
     if all(named(p) for p in paths):
         return True
