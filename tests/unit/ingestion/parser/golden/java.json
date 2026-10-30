@@ -486,6 +486,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -511,6 +512,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -536,6 +538,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -561,6 +564,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -637,7 +641,7 @@
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
-        "bare_name_fallback": false,
+        "bare_name_fallback": true,
         "spawned": false,
         "program_call": false,
         "argument_types": null,
