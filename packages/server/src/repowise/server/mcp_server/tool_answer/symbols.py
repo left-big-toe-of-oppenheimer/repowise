@@ -325,7 +325,7 @@ def _split_definitions(rows: list) -> dict[str, list[str]]:
     files: dict[str, set[str]] = {}
     for row in rows:
         path = row.file_path
-        if path and not is_test_related_path(path, row.language):
+        if path and not is_test_related_path(path, getattr(row, "language", None)):
             files.setdefault(row.name, set()).add(path)
     return {name: sorted(paths) for name, paths in files.items() if len(paths) > 1}
 

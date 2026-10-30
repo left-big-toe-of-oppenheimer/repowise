@@ -775,7 +775,7 @@ class _Grade(NamedTuple):
     #: Code names the question writes that nothing in the repository defines or writes.
     absent_names: tuple[str, ...] = ()
     #: Question names defined in several files the answer does not tell apart, with those files.
-    split_names: dict[str, list[str]] = field(default_factory=dict)
+    split_names: dict[str, list[str]] | None = None
 
 
 @dataclass
