@@ -626,9 +626,11 @@ def _noted_unfounded_claim(payload: dict, grade: _Grade, fallback_targets: list[
         )
         return True
     if not grade.ungrounded_values:
-        if grade.split_names:
+        # The split gate only demotes a high answer to medium; past that it says nothing.
+        split = grade.confidence == "medium" and grade.split_names
+        if split:
             payload["note"] = _split_names_note(grade.split_names)
-        return bool(grade.split_names)
+        return bool(split)
     payload["note"] = (
         f"Value-grounding gate: the answer asserts {grade.ungrounded_values} "
         "but none of these appear in any retrieved excerpt — the "
