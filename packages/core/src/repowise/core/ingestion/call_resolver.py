@@ -1233,11 +1233,16 @@ class CallResolver(
             if tabled is not None
             else self._chain_inner_callee(file_path, call, inner, caller_id, language)
         )
-        if language in _RETURNED_TYPE_ID_LANGUAGES and inner_callee is not None:
+        if language in _RETURNED_TYPE_ID_LANGUAGES and (inner_callee or language == "rust"):
             # A go method may sit in any file of its type's package, so the
             # type is read by identity and the method asked for across it.
             # Python and Dart read the return type in the callee's file the same way.
-            type_id = self._returned_type_id(inner_callee)
+            # A Rust `.unwrap()` link is std's, typed from the call under it.
+            type_id = (
+                self._returned_type_id(inner_callee)
+                if inner_callee is not None
+                else self._rust_unwrapped_link(file_path, call, inner, caller_id)
+            )
             hit = (
                 None
                 if type_id is None

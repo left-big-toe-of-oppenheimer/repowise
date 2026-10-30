@@ -271,3 +271,51 @@ class TestReturnTypeChain:
     def test_a_link_on_a_turbofish_call_takes_no_bare_name(self, tmp_path: Path) -> None:
         targets = _chain_repo(tmp_path, "    Config::fresh().me::<u8>().only_here();")
         assert "src/a.rs::Config::only_here" not in targets
+
+
+def _unwrap_repo(root: Path, body: str) -> set[str]:
+    """``Glob`` fallible constructors and an ``Error`` enum, called from ``c.rs::run``."""
+    (root / "Cargo.toml").write_text('[package]\nname = "demo"\nversion = "0.1.0"\n')
+    src = root / "src"
+    src.mkdir(parents=True, exist_ok=True)
+    (src / "lib.rs").write_text("pub mod a;\npub mod c;\n")
+    (src / "a.rs").write_text(
+        "pub struct Glob { n: u32 }\n"
+        "impl Glob {\n"
+        "    pub fn new(p: &str) -> Result<Glob, Error> { Ok(Glob { n: 0 }) }\n"
+        "    pub fn find(p: &str) -> Option<&'static Glob> { None }\n"
+        "    pub fn plain(p: &str) -> Glob { Glob { n: 0 } }\n"
+        "    pub fn compile(&self) -> u32 { self.n }\n"
+        "}\n"
+        "pub enum Error {\n"
+        "    Io(u32),\n"
+        "}\n"
+        "impl Error {\n"
+        "    pub fn with_path(self, p: &str) -> Error { self }\n"
+        "    pub fn depth(&self) -> u32 { 0 }\n"
+        "}\n"
+    )
+    (src / "c.rs").write_text(f"use crate::a::{{Glob, Error}};\npub fn run() {{\n{body}\n}}\n")
+    return _call_targets(_build(root), "src/c.rs::run")
+
+
+class TestUnwrapAndVariantLinks:
+    def test_an_unwrapped_result_types_the_next_link(self, tmp_path: Path) -> None:
+        assert "src/a.rs::Glob::compile" in _unwrap_repo(tmp_path, '    Glob::new("x").unwrap().compile();')
+
+    def test_an_expected_option_of_a_borrow_types_the_next_link(self, tmp_path: Path) -> None:
+        targets = _unwrap_repo(tmp_path, '    Glob::find("x").expect("y").compile();')
+        assert "src/a.rs::Glob::compile" in targets
+
+    def test_an_unwrap_of_a_plain_return_types_nothing(self, tmp_path: Path) -> None:
+        """``plain`` returns no ``Result``/``Option``, so its ``unwrap`` is no std unwrap."""
+        targets = _unwrap_repo(tmp_path, '    Glob::plain("x").unwrap().compile();')
+        assert "src/a.rs::Glob::compile" not in targets
+
+    def test_a_tuple_variant_constructs_its_enum(self, tmp_path: Path) -> None:
+        targets = _unwrap_repo(tmp_path, '    Error::Io(1).with_path("p").depth();')
+        assert {"src/a.rs::Error::with_path", "src/a.rs::Error::depth"} <= targets
+
+    def test_a_local_from_a_tuple_variant(self, tmp_path: Path) -> None:
+        targets = _unwrap_repo(tmp_path, "    let e = Error::Io(1);\n    e.depth();")
+        assert "src/a.rs::Error::depth" in targets
