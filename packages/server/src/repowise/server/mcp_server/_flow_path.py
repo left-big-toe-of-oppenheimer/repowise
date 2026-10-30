@@ -273,20 +273,11 @@ def _bfs_path(adj: dict[str, list[str]], src: str, dst: str, max_depth: int) -> 
             frontier, parents, other = fwd_frontier, fwd, bwd
         else:
             frontier, parents, other = bwd_frontier, bwd, fwd
-        nxt: list[str] = []
-        for node in frontier:
-            for nb in adj.get(node, ()):
-                # A test imports both ends of the codebase, so a path through
-                # one connects files that do not call each other.
-                if nb in parents or is_test_related_path(nb):
-                    continue
-                parents[nb] = node
-                visited += 1
-                if nb in other:
-                    return _stitch(fwd, bwd, nb)
-                nxt.append(nb)
-            if visited > _FLOW_MAX_VISITED:
-                return None
+        nxt, meet, visited = _advance(adj, frontier, parents, other, visited)
+        if meet is not None:
+            return _stitch(fwd, bwd, meet)
+        if visited > _FLOW_MAX_VISITED:
+            return None
         if expand_fwd:
             fwd_frontier = nxt
             fwd_depth += 1
@@ -295,6 +286,33 @@ def _bfs_path(adj: dict[str, list[str]], src: str, dst: str, max_depth: int) -> 
             bwd_depth += 1
         expand_fwd = not expand_fwd
     return None
+
+
+def _advance(
+    adj: dict[str, list[str]],
+    frontier: list[str],
+    parents: dict[str, Any],
+    other: dict[str, Any],
+    visited: int,
+) -> tuple[list[str], str | None, int]:
+    """One BFS hop from *frontier*: the next frontier, the node where the two
+    sides meet (or None), and the running visit count. Stops early past the
+    visit cap, as the caller then gives up."""
+    nxt: list[str] = []
+    for node in frontier:
+        for nb in adj.get(node, ()):
+            # A test imports both ends of the codebase, so a path through one
+            # connects files that do not call each other.
+            if nb in parents or is_test_related_path(nb):
+                continue
+            parents[nb] = node
+            visited += 1
+            if nb in other:
+                return nxt, nb, visited
+            nxt.append(nb)
+        if visited > _FLOW_MAX_VISITED:
+            break
+    return nxt, None, visited
 
 
 def _stitch(fwd: dict[str, Any], bwd: dict[str, Any], meet: str) -> list[str]:

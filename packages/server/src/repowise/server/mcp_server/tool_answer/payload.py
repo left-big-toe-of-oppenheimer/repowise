@@ -617,7 +617,8 @@ def _high_confidence_note(grade: _Grade, tail: str) -> str:
 
 
 def _noted_unfounded_claim(payload: dict, grade: _Grade, fallback_targets: list[str]) -> bool:
-    """Write the note for a name nothing defines or a value nothing retrieved holds."""
+    """Write the note for a name nothing defines, a name defined in several files
+    the answer does not tell apart, or a value nothing retrieved holds."""
     if grade.absent_names:
         payload["note"] = (
             f"Nothing in this repository defines or writes {', '.join(grade.absent_names)}, "
@@ -625,7 +626,9 @@ def _noted_unfounded_claim(payload: dict, grade: _Grade, fallback_targets: list[
         )
         return True
     if not grade.ungrounded_values:
-        return False
+        if grade.split_names:
+            payload["note"] = _split_names_note(grade.split_names)
+        return bool(grade.split_names)
     payload["note"] = (
         f"Value-grounding gate: the answer asserts {grade.ungrounded_values} "
         "but none of these appear in any retrieved excerpt — the "
@@ -697,8 +700,6 @@ async def _graded_payload(
         payload["grounding"] = "symbol_body"
     if _noted_unfounded_claim(payload, grade, fallback_targets):
         pass
-    elif grade.split_names:
-        payload["note"] = _split_names_note(grade.split_names)
     elif grade.admitted_gap:
         payload["note"] = (
             "Held at medium: the answer says part of the question is outside the "
