@@ -302,8 +302,10 @@ def _advance(
     for node in frontier:
         for nb in adj.get(node, ()):
             # A test imports both ends of the codebase, so a path through one
-            # connects files that do not call each other.
-            if nb in parents or is_test_related_path(nb):
+            # connects files that do not call each other. A test endpoint (the
+            # other side's root) is still reachable.
+            endpoint = nb in other and other[nb] is None
+            if nb in parents or (is_test_related_path(nb) and not endpoint):
                 continue
             parents[nb] = node
             visited += 1

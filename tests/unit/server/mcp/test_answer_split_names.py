@@ -126,6 +126,11 @@ def test_split_definitions_counts_production_files_only() -> None:
     assert _split_definitions(rows) == {"DEFAULT_CONCURRENCY": [_SSG, _POOL]}
 
 
+def test_a_generic_name_defined_in_many_files_is_not_split_checked() -> None:
+    rows = [_row("get", f"src/m{i}.ts") for i in range(6)]
+    assert _split_definitions(rows) == {}
+
+
 class _UntrustingGuard:
     async def trusts(self, token, row):
         return False
@@ -143,3 +148,8 @@ def test_a_name_written_as_an_owner_anchors_its_definition() -> None:
     run = asyncio.run
     assert run(_trusted_over_topic(by_name, {"Client", "Client.get"}, _UntrustingGuard())) == by_name
     assert run(_trusted_over_topic(by_name, {"Client"}, _UntrustingGuard())) == {}
+    other = SimpleNamespace(
+        name="Client", file_path="pkg/rpc.py", parent_name=None, qualified_name="pkg.rpc.Client"
+    )
+    two = {"Client": [client, other]}
+    assert run(_trusted_over_topic(two, {"Client", "Client.get"}, _UntrustingGuard())) == {}

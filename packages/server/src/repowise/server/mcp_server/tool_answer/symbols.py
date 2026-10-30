@@ -316,8 +316,13 @@ async def _anchor_symbol_hits(
     return hits, homonyms
 
 
+# A name defined in more files than this is generic (``get``, ``run``): no answer
+# could name every definition, so the split check leaves it alone.
+_SPLIT_MAX_FILES = 4
+
+
 def _split_definitions(rows: list) -> dict[str, list[str]]:
-    """Names defined in more than one production file, with those files.
+    """Names defined in two to ``_SPLIT_MAX_FILES`` production files, with those files.
 
     Any kind counts: a constant defined twice is as ambiguous as a function.
     Test and doc copies do not, and overloads in one file are one place.
@@ -327,7 +332,9 @@ def _split_definitions(rows: list) -> dict[str, list[str]]:
         path = row.file_path
         if path and not is_test_related_path(path, getattr(row, "language", None)):
             files.setdefault(row.name, set()).add(path)
-    return {name: sorted(paths) for name, paths in files.items() if len(paths) > 1}
+    return {
+        name: sorted(paths) for name, paths in files.items() if 1 < len(paths) <= _SPLIT_MAX_FILES
+    }
 
 
 class _TopicGuard:
@@ -419,7 +426,8 @@ async def _trusted_over_topic(
     """
     kept: dict[str, list] = {}
     for name, cands in by_name.items():
-        owner = any(q.startswith(f"{name}.") for q in question_ids)
+        # Only a sole definition: with several, the owner alone does not say which.
+        owner = len(cands) == 1 and any(q.startswith(f"{name}.") for q in question_ids)
         trusted = [
             c
             for c in cands

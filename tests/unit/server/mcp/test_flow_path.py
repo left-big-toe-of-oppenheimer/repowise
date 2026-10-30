@@ -330,3 +330,14 @@ def test_bfs_never_routes_a_path_through_a_test():
     adj = {**adj, "a.py": ["m.py", "tests/test_ab.py"], "m.py": ["a.py", "b.py"]}
     adj["b.py"] = ["m.py", "tests/test_ab.py"]
     assert _bfs_path(adj, "a.py", "b.py", 4) == ["a.py", "m.py", "b.py"]
+
+
+def test_bfs_still_reaches_a_test_file_that_is_an_endpoint():
+    from repowise.server.mcp_server._flow_path import _bfs_path
+
+    adj = {
+        "a.py": ["m.py"],
+        "m.py": ["a.py", "tests/test_a.py"],
+        "tests/test_a.py": ["m.py"],
+    }
+    assert _bfs_path(adj, "a.py", "tests/test_a.py", 4) == ["a.py", "m.py", "tests/test_a.py"]
