@@ -87,7 +87,7 @@ def _git(root: Path, *args: str) -> bytes | None:
             stdin=subprocess.DEVNULL,
             timeout=_GIT_TIMEOUT_S,
         )
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         return None
     return proc.stdout if proc.returncode == 0 else None
 
@@ -118,7 +118,7 @@ def _code_paths(root: Path, blobs: list[tuple[str, str]]) -> list[tuple[str, str
 
 
 def _harvest_file(root: Path, path: str, blob: str) -> Entry | None:
-    """*root* is resolved."""
+    """The stored entry for one file under the resolved *root*, serving both modes."""
     text = _read_under(root, path)
     if text is None:
         return None
@@ -173,7 +173,8 @@ def _load(root: Path) -> dict[str, Entry]:
         return {path: (e[0], bool(e[1]), e[2]) for path, e in data["files"].items()}
     except FileNotFoundError:
         return {}
-    except Exception as exc:  # corrupt or foreign: harvest live
+    except (OSError, ValueError, TypeError, KeyError, IndexError, AttributeError) as exc:
+        # Corrupt or foreign: harvest live.
         _log.debug("rationale harvest store unreadable: %s", exc)
         return {}
 
@@ -183,6 +184,24 @@ def _dirty_paths(root: Path) -> set[str]:
     return set(out.decode("utf-8", "replace").split("\0")) if out else set()
 
 
+def _refreshed_entries(root: Path, blobs: list[tuple[str, str]]) -> tuple[dict, dict]:
+    """``(stored, refreshed)``: unchanged blobs keep their entry, changed ones are read.
+
+    A file dirty in the working tree is left out, so a query reads it live.
+    """
+    old = _load(root)
+    dirty = _dirty_paths(root)
+    files: dict[str, Entry] = {}
+    for path, blob in _code_paths(root, blobs):
+        prev = old.get(path)
+        entry = prev if prev and prev[0] == blob else None
+        if entry is None and path not in dirty:
+            entry = _harvest_file(root, path, blob)
+        if entry is not None:
+            files[path] = entry
+    return old, files
+
+
 def refresh_rationale_store(repo_path: Path | str) -> None:
     """Bring ``rationale_harvest.json`` up to the working tree, reading changed blobs only.
 
@@ -190,27 +209,18 @@ def refresh_rationale_store(repo_path: Path | str) -> None:
     """
     try:
         root = Path(repo_path).resolve()
-        if not (root / ".repowise").is_dir():
-            return
-        blobs = _tracked_blobs(root)
+        blobs = _tracked_blobs(root) if (root / ".repowise").is_dir() else None
         if blobs is None:
             return
-        old = _load(root)
-        dirty = _dirty_paths(root)
-        files: dict[str, Entry] = {}
-        for path, blob in _code_paths(root, blobs):
-            prev = old.get(path)
-            entry = prev if prev and prev[0] == blob else None
-            if entry is None and path not in dirty:
-                entry = _harvest_file(root, path, blob)
-            if entry is not None:
-                files[path] = entry
+        old, files = _refreshed_entries(root, blobs)
         if files == old and _store_path(root).is_file():
             return
         from repowise.core.fsutils import atomic_write_text
 
         payload = {"fingerprint": _fingerprint(), "files": files}
         atomic_write_text(_store_path(root), json.dumps(payload, separators=(",", ":")))
+    # Broad on purpose: the index is already committed, and a harvest bug must
+    # not fail the write that called it. The query then harvests live.
     except Exception as exc:
         _log.debug("rationale harvest refresh failed: %s", exc)
 
