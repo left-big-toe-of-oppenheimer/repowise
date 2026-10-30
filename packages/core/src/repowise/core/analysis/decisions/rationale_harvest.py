@@ -136,6 +136,23 @@ def _harvest_file(root: Path, path: str, blob: str) -> Entry | None:
     return blob, production, rows
 
 
+def _live_rows(root: Path, path: str, plain: bool) -> list[dict]:
+    """One file's served rows read now, harvesting only what *plain* serves."""
+    text = _read_under(root, path)
+    if text is None:
+        return []
+    ext = path.rsplit(".", 1)[-1].lower()
+    if not plain:
+        harvested = harvest_file_rationale(text, ext)
+    elif code_origin(path, text) == "production":
+        harvested = harvest_file_rationale(
+            text, ext, max_per_file=_MAX_FILE_LINES, require_marker=False
+        )
+    else:
+        return []
+    return [{"path": path, "lines": [h.start_line, h.end_line], "comment": h.text} for h in harvested]
+
+
 def _store_path(root: Path) -> Path:
     return root / ".repowise" / _FILENAME
 
@@ -223,8 +240,8 @@ def harvest_repo_rationale(repo_root: Path, plain: bool = False) -> list[dict]:
     rows: list[dict] = []
     for path, blob in _code_paths(repo_root, blobs):
         entry = stored.get(path)
-        if entry is None or entry[0] != blob:
-            entry = _harvest_file(repo_root, path, blob)
-        if entry is not None:
+        if entry is not None and entry[0] == blob:
             rows.extend(_served_rows(path, entry, plain))
+        else:
+            rows.extend(_live_rows(repo_root, path, plain))
     return rows
