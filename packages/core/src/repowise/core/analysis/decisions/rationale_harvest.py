@@ -143,7 +143,8 @@ def _store_path(root: Path) -> Path:
 def _fingerprint() -> str:
     from repowise.core.analysis.health.source_fingerprint import source_fingerprint
 
-    return source_fingerprint(HARVEST_INPUTS, f"v{_VERSION}")
+    # The harvest is regex-only; listing installed parsers costs a third of a second.
+    return source_fingerprint(HARVEST_INPUTS, f"v{_VERSION}", parser_dependencies=False)
 
 
 def _load(root: Path) -> dict[str, Entry]:
