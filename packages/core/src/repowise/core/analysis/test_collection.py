@@ -206,8 +206,36 @@ def plan_scopes(
             )
             namers = {**{f: n for f, n in namers.items() if f not in fixtures}, **readers}
     scopes = trigger_scopes(paths, checkout.tracked, namers, config)
+    if change.head is None:
+        scopes.update(_empty_new_files(change.files, checkout))
     routes = sorted({r for scope in scopes.values() for r in scope.routes} - set(paths))
     return Plan(namers, scopes, routes)
+
+
+#: Empty files whose presence alone still changes what runs: a package and a pytest scope.
+_PRESENCE_MATTERS = frozenset({"__init__.py", "conftest.py"})
+
+
+def _empty_new_files(paths: Collection[str], checkout: Checkout) -> dict[str, Any]:
+    """An untracked code file with no content needs no tests: it holds nothing to run.
+
+    Ceiling: only uncommitted work is read here, so a file committed empty
+    keeps its rule; reading it at the change's head is the upgrade.
+    """
+    from .selection_scopes import Scope
+    from .test_selection import EMPTY_NEW_FILE, NO_TESTS_NEEDED, is_code_file
+
+    tracked = set(checkout.tracked)
+    out: dict[str, Any] = {}
+    for path in paths:
+        if path in tracked or not is_code_file(path):
+            continue
+        if PurePosixPath(path).name in _PRESENCE_MATTERS:
+            continue
+        text = checkout.read(path)
+        if text is not None and not text.strip():
+            out[path] = Scope(EMPTY_NEW_FILE, NO_TESTS_NEEDED)
+    return out
 
 
 def _scan_texts(
