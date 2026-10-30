@@ -607,6 +607,71 @@ class TestNestMicroservices:
         assert _extract(tmp_path, "c.ts", "@EventPattern('x')\nf() {}\n") == []
 
 
+class TestDapr:
+    _USING = "using Dapr;\nusing Dapr.Client;\n"
+
+    def test_topic_attribute_is_a_consumer(self, tmp_path: Path) -> None:
+        src = self._USING + '[Topic("pubsub", "orders")]\npublic Task Handle(OrderPlaced e) { }\n'
+        c = _one(_extract(tmp_path, "Orders.cs", src), "consumer")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_publish_event_on_a_dapr_client_is_a_provider(self, tmp_path: Path) -> None:
+        src = (
+            self._USING
+            + "private readonly DaprClient daprClient;\n"
+            + 'await daprClient.PublishEventAsync("pubsub", "orders", evt);\n'
+        )
+        c = _one(_extract(tmp_path, "Pub.cs", src), "provider")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_publish_event_on_another_receiver_is_not_read(self, tmp_path: Path) -> None:
+        src = self._USING + 'await bus.PublishEventAsync("pubsub", "orders", evt);\n'
+        assert _extract(tmp_path, "Other.cs", src) == []
+
+    def test_topic_attribute_needs_the_dapr_import(self, tmp_path: Path) -> None:
+        src = '[Topic("pubsub", "orders")]\npublic Task Handle(OrderPlaced e) { }\n'
+        assert _extract(tmp_path, "NoDapr.cs", src) == []
+
+    def test_a_named_topic_name_argument_is_read(self, tmp_path: Path) -> None:
+        src = (
+            self._USING
+            + "private readonly DaprClient dapr;\n"
+            + 'await dapr.PublishEventAsync("pubsub", topicName: "orders", evt);\n'
+        )
+        c = _one(_extract(tmp_path, "Named.cs", src), "provider")
+        assert c.contract_id == "topic::orders"
+
+    _SUBSCRIPTION = (
+        "apiVersion: dapr.io/v2alpha1\n"
+        "kind: Subscription\n"
+        "metadata: \n"
+        "  name: order-sub\n"
+        "spec:\n"
+        "  pubsubname: pubsub\n"
+        "  topic: orders\n"
+        "  routes: \n"
+        "    default: /orders\n"
+    )
+
+    def test_a_subscription_manifest_is_a_consumer(self, tmp_path: Path) -> None:
+        c = _one(_extract(tmp_path, "deploy/sub.yaml", self._SUBSCRIPTION), "consumer")
+        assert (c.contract_id, c.meta["broker"], c.line) == ("topic::orders", "dapr", 7)
+
+    def test_every_subscription_in_a_multi_document_file_is_read(self, tmp_path: Path) -> None:
+        other = self._SUBSCRIPTION.replace("orders", "refunds")
+        rows = _extract(tmp_path, "sub.yml", self._SUBSCRIPTION + "---\n" + other)
+        assert {c.contract_id for c in rows} == {"topic::orders", "topic::refunds"}
+
+    def test_only_a_dapr_subscription_is_read(self, tmp_path: Path) -> None:
+        component = self._SUBSCRIPTION.replace("Subscription", "Component")
+        foreign = self._SUBSCRIPTION.replace("dapr.io/v2alpha1", "example.com/v1")
+        assert _extract(tmp_path, "component.yaml", component) == []
+        assert _extract(tmp_path, "foreign.yaml", foreign) == []
+
+    def test_a_broken_manifest_is_skipped(self, tmp_path: Path) -> None:
+        assert _extract(tmp_path, "bad.yaml", "dapr.io: [unclosed\n  kind: Subscription") == []
+
+
 class TestKafkaByReceiverType:
     """A client read on whatever name the file declares it with."""
 
@@ -787,3 +852,61 @@ class TestGoKafka:
             'r := kgo.Record{Topic: "c"}\n'
         )
         assert _extract(tmp_path, "main.go", src) == []
+
+
+_SB = "using Azure.Messaging.ServiceBus;\n"
+
+
+class TestAzureServiceBus:
+    def test_a_sender_and_a_processor_meet_on_the_queue(self, tmp_path: Path) -> None:
+        sender = _SB + 'var sender = client.CreateSender("orders");\nawait sender.SendMessageAsync(m);\n'
+        processor = (
+            _SB
+            + 'var processor = client.CreateProcessor("orders", new ServiceBusProcessorOptions());\n'
+            + 'var receiver = client.CreateReceiver("refunds");\n'
+        )
+        _extract(tmp_path, "sender/OrderPublisher.cs", sender)
+        rows = _extract(tmp_path, "billing/OrderWorker.cs", processor)
+        assert {(c.role, c.contract_id, c.meta["broker"], c.meta["kind"]) for c in rows} == {
+            ("provider", "topic::orders", "azure_servicebus", "queue"),
+            ("consumer", "topic::orders", "azure_servicebus", "queue"),
+            ("consumer", "topic::refunds", "azure_servicebus", "queue"),
+        }
+        assert {c.origin for c in rows} == {ContractOrigin.CLIENT_CALL}
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            'client.CreateProcessor("orders", "billing")',
+            'client.CreateProcessor("orders", "billing", new ServiceBusProcessorOptions())',
+            'client.CreateReceiver("orders", billingSubscription)',
+            'client.CreateSessionProcessor("orders", SubscriptionName, options)',
+            'client.CreateReceiver(topicName: "orders", subscriptionName: "billing")',
+        ],
+    )
+    def test_a_receive_naming_a_subscription_reads_a_topic(self, tmp_path: Path, call: str) -> None:
+        c = _one(_extract(tmp_path, "Worker.cs", _SB + f"var r = {call};\n"), "consumer")
+        assert (c.contract_id, c.meta["kind"]) == ("topic::orders", "topic")
+
+    def test_functions_triggers_are_route_registrations(self, tmp_path: Path) -> None:
+        src = (
+            "public static class RefundFunction {\n"
+            '    [Function("Refund")]\n'
+            '    public static void Run([ServiceBusTrigger("refunds", Connection = "SB")] string msg) { }\n'
+            '    [FunctionName("Audit")]\n'
+            '    public static void Audit([ServiceBusTrigger("orders", "audit")] string msg) { }\n'
+            "}\n"
+        )
+        rows = _extract(tmp_path, "RefundFunction.cs", src)
+        assert {(c.role, c.contract_id, c.meta["kind"], c.origin) for c in rows} == {
+            ("consumer", "topic::refunds", "queue", ContractOrigin.ROUTE_REGISTRATION),
+            ("consumer", "topic::orders", "topic", ContractOrigin.ROUTE_REGISTRATION),
+        }
+
+    def test_a_commented_out_call_is_not_read(self, tmp_path: Path) -> None:
+        src = _SB + '// var sender = client.CreateSender("old-orders");\n/* client.CreateProcessor("x"); */\n'
+        assert _extract(tmp_path, "Old.cs", src) == []
+
+    def test_client_calls_need_the_library_import(self, tmp_path: Path) -> None:
+        src = 'var s = factory.CreateSender("orders");\nvar p = pool.CreateProcessor("jobs");\n'
+        assert _extract(tmp_path, "Other.cs", src) == []

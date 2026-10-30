@@ -1315,6 +1315,10 @@ export interface CouplingNodeResponse {
   nloc?: number;
 }
 
+export interface CoverageAddRequest {
+  path: string;
+}
+
 /** One ingested report's repo-wide figures, as ``crud.load_coverage_history`` reads them. */
 export interface CoverageHistoryPoint {
   ingested_at: string;
@@ -1610,6 +1614,8 @@ export interface DecisionRecordResponse {
   accepter?: string | null;
   accepter_kind?: string | null;
   accepter_session?: string | null;
+  blockers?: string[] | null;
+  decision_text_missing?: boolean;
 }
 
 /** The resolved decision capture policy for one repository. */
@@ -2619,6 +2625,10 @@ export interface HealthWorkQueueResponse {
   limit?: number;
 }
 
+export interface HookToggle {
+  enabled: boolean;
+}
+
 export interface HotFilesGraphResponse {
   nodes: HotFilesNodeResponse[];
   links: GraphEdgeResponse[];
@@ -2949,6 +2959,21 @@ export interface NodeSearchResult {
 /** Acknowledgement for a mutation with nothing else to report. */
 export interface OkResponse {
   ok?: boolean;
+}
+
+export interface OnboardingPatch {
+  welcome_seen_repo?: string | null;
+  setup_pill_hidden?: boolean | null;
+  hosted_card_hidden?: boolean | null;
+}
+
+/** Per-machine onboarding state, plus the switches that hide hosted surfaces. */
+export interface OnboardingState {
+  welcome_seen?: Record<string, string>;
+  setup_pill_hidden?: boolean;
+  hosted_card_hidden?: boolean;
+  hints_enabled: boolean;
+  signed_in: boolean;
 }
 
 /** Every display name and canonical email folded into one person. */
@@ -3378,6 +3403,12 @@ export interface PeriodHealthSummaryResponse {
   net_findings: number;
 }
 
+/** Result of pinning a file's doc (issue #812). */
+export interface PinDocResponse {
+  file_path: string;
+  pinned: boolean;
+}
+
 /** A function's stored size measures; an absent one was not measured. */
 export interface PlanMeasuresResponse {
   ccn?: number | null;
@@ -3435,8 +3466,10 @@ export interface ProviderEntry {
   requires_key?: boolean;
   accepts_base_url?: boolean;
   local_server?: boolean;
+  local_model?: boolean;
   env_vars?: string[];
   setup_hint?: string;
+  detected?: "signed_in" | "installed" | "env" | "saved" | null;
 }
 
 export interface ProviderModelEntry {
@@ -4091,6 +4124,115 @@ export interface SetApiKeyRequest {
   repo_id?: string | null;
 }
 
+export interface SetupAgent {
+  id: string;
+  display_name: string;
+  tier?: string | null;
+  docs_url?: string | null;
+  installed: boolean;
+  connected: boolean;
+  registrations?: SetupRegistration[];
+  config_files?: Record<string, string[]>;
+  first_call_at?: string | null;
+  last_call_at?: string | null;
+}
+
+/** Every call to this repo's index, whichever agent made it. */
+export interface SetupCalls {
+  first_call_at?: string | null;
+  last_call_at?: string | null;
+  unattributed?: boolean;
+}
+
+export interface SetupCheck {
+  id: string;
+  name: string;
+  level: "ok" | "warn" | "fail";
+  detail?: string;
+  fix?: string | null;
+}
+
+export interface SetupCoverage {
+  ingested_at?: string | null;
+  configured_paths?: string[];
+  discovered?: SetupCoverageReport[];
+}
+
+export interface SetupCoverageReport {
+  path: string;
+  modified_at: string;
+  age_days: number;
+}
+
+export interface SetupFileChange {
+  path: string;
+  action: string;
+  scope: string;
+  reason?: string | null;
+}
+
+export interface SetupIndex {
+  state: "up_to_date" | "behind" | "incomplete";
+  indexed_commit?: string | null;
+  live_head?: string | null;
+  indexed_at?: string | null;
+  file_count?: number;
+  parse_error_count?: number;
+  parse_error_files?: string[];
+}
+
+export interface SetupModel {
+  docs_mode: "none" | "deterministic" | "llm";
+  active_provider?: string | null;
+  active_model?: string | null;
+  configured_providers?: string[];
+}
+
+export interface SetupRegistration {
+  method: string;
+  scope: string;
+  config_path: string;
+}
+
+export interface SetupResponse {
+  repo_id: string;
+  generated_at: string;
+  index: SetupIndex;
+  agents_available: boolean;
+  agents?: SetupAgent[];
+  calls_available: boolean;
+  calls: SetupCalls;
+  sync: SetupSync;
+  rewrite_hook: SetupRewriteHook;
+  coverage_available: boolean;
+  coverage: SetupCoverage;
+  model_available: boolean;
+  model: SetupModel;
+  checks_available: boolean;
+  checks?: SetupCheck[];
+  onboarding: OnboardingState;
+  writes_allowed: boolean;
+}
+
+export interface SetupRewriteHook {
+  state: "installed" | "not_installed" | "not_applicable" | "unknown";
+  detail?: string;
+}
+
+export interface SetupSync {
+  installed?: boolean | null;
+  detail?: string;
+}
+
+/** What a write did. ``ok`` is the command's own success. */
+export interface SetupWriteResponse {
+  ok: boolean;
+  command: string;
+  message?: string;
+  output?: string[];
+  files?: SetupFileChange[];
+}
+
 export interface SiloModule {
   module: string;
   owner: OwnerRef;
@@ -4508,6 +4650,14 @@ export interface WorkspaceCoChangeEntry {
   strength: number;
   frequency: number;
   last_date: string;
+  evidence?: WorkspaceCoChangeEvidence | null;
+}
+
+/** Bounded supporting evidence for one co-change pair (#483). */
+export interface WorkspaceCoChangeEvidence {
+  authors?: string[];
+  commit_pairs?: Record<string, unknown>[];
+  max_gap_hours?: number;
 }
 
 /** What declared structure connects one co-changing file pair. */

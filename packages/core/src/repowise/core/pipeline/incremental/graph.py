@@ -36,24 +36,32 @@ def _parse_misses(
     to_parse: list,
     parse_cache: Any,
     timings: PhaseTimings | None,
+    log: LogFn = _noop_log,
 ) -> dict[int, Any]:
-    """Parse the parse-cache misses and merge them over the cached hits by index."""
-    from repowise.core.ingestion import ASTParser
-    from repowise.core.pipeline.phases.ingestion import _cache_parsed
+    """Parse the parse-cache misses and merge them over the cached hits by index.
 
-    parser: Any = None  # constructed lazily — every-file-cached updates skip query compilation
+    Misses go through init's deadline pool, so one file that never finishes
+    parsing costs this update one deadline instead of hanging it. An update
+    whose files are all cached starts no pool.
+    """
+    from repowise.core.pipeline.phases.ingestion import (
+        _cache_parsed,
+        parse_guarded,
+        report_parse_failures,
+    )
+
     merged: dict[int, Any] = dict(cached_hits)
     with timed(timings, "rebuild.parse"):
-        for idx, (fi, source), content_hash in to_parse:
-            try:
-                if parser is None:
-                    parser = ASTParser()
-                parsed = parser.parse_file(fi, source)
-            except Exception:
-                continue
-            merged[idx] = parsed
-            if content_hash:
-                _cache_parsed(parse_cache, parsed, content_hash)
+        results = parse_guarded(to_parse)
+    for (idx, _item, content_hash), parsed in zip(to_parse, results, strict=True):
+        if isinstance(parsed, tuple | BaseException):
+            continue
+        merged[idx] = parsed
+        if content_hash:
+            _cache_parsed(parse_cache, parsed, content_hash)
+    message = report_parse_failures(to_parse, results)
+    if message:
+        log(f"[yellow]{message}[/yellow]")
     return merged
 
 
@@ -235,11 +243,10 @@ pass reads the sources.
         file_info.path for file_info in file_infos
     }
 
-    # Parse the misses in process and serially: on the update path they are
-    # change-sized. (Ceiling: a wiped/stale cache re-parses everything on one
-    # core; routing large miss counts through init's process pool would lift
-    # it, at the cost of Windows spawn overhead on every routine update.)
-    merged = _parse_misses(cached_hits, to_parse, parse_cache, timings)
+    # Misses go through init's deadline pool. An update pays one pool start
+    # (about a second on Windows) when anything changed, in exchange for a
+    # file that never finishes parsing costing one deadline instead of the run.
+    merged = _parse_misses(cached_hits, to_parse, parse_cache, timings, log)
 
     skipped = len(file_infos) - len(fi_and_bytes)  # unreadable files
     # Opened here and closed after build(): graph construction is the add_file
@@ -277,6 +284,12 @@ pass reads the sources.
         log(f"[yellow]Skipped {skipped} file(s) that failed to parse.[/yellow]")
 
     _add_synthetic_edges(repo_path, graph_builder, file_infos, source_map, log, timings)
+
+    # The flag init sets after its graph build, so an update renders and keeps
+    # a route-declaring file's api_contract page instead of demoting it.
+    from repowise.core.generation import detect_code_api_contracts
+
+    detect_code_api_contracts(parsed_files)
 
     return parsed_files, source_map, graph_builder, repo_structure, len(file_infos)
 
@@ -372,6 +385,7 @@ async def rebuild_graph_and_git(
             git_meta_map = {m["file_path"]: m for m in updated_meta}
             label_co_change_structure(graph_builder, git_meta_map)
             graph_builder.update_co_change_edges(git_meta_map)
+            graph_builder.co_change_edges_complete = True
         else:
             changed_paths = build_filtered_changed_paths(file_diffs, exclude_patterns)
             # The full tracked-file set lets the indexer re-run the repo-wide
@@ -402,6 +416,9 @@ async def rebuild_graph_and_git(
                         for fp, partners in co_change_full.items()
                     }
                 )
+                # Every pair is in the graph, so persistence may sync the stored
+                # pairs repo-wide; the fallback below holds the changed files' only.
+                graph_builder.co_change_edges_complete = True
             else:
                 graph_builder.update_co_change_edges(git_meta_map)
     except Exception as exc:

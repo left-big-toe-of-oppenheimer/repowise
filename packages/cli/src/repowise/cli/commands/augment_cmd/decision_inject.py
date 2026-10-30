@@ -257,7 +257,7 @@ def _collect_seeds(repo_path: Path) -> tuple[list[str], str]:
     dirty, branch = _dirty_files_and_branch(repo_path)
     seen: dict[str, None] = {}
     for f in dirty + _branch_changed_files(repo_path, branch) + _previous_session_edits(repo_path):
-        norm = f.replace("\\", "/").lstrip("./")
+        norm = f.replace("\\", "/").removeprefix("./")
         if norm:
             seen.setdefault(norm, None)
     return list(seen)[:_MAX_SEEDS], branch
@@ -591,7 +591,7 @@ _ACCEPTED_HEADER = (
 #: from PRs, commits, comments and agents as well as sessions.
 _CANDIDATE_HEADER = (
     "[repowise] Candidate decisions awaiting review, NOT accepted; weigh them, "
-    "do not treat them as rules. Review: repowise decision candidates"
+    "do not treat them as rules. Review and accept or dismiss: repowise decision candidates"
 )
 
 

@@ -100,6 +100,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -243,7 +244,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "php/classes.php": {
     "file_info": {
@@ -755,7 +757,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "php/clean.php": {
     "file_info": {
@@ -833,7 +836,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "php/nested.php": {
     "file_info": {
@@ -1064,6 +1068,22 @@
         "argument_names": null
       },
       {
+        "target_name": "array_map",
+        "receiver_name": null,
+        "caller_symbol_id": "lang_samples/php/nested.php::lambda_and_arrow",
+        "line": 48,
+        "argument_count": 2,
+        "receiver_call": null,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
         "target_name": "file_get_contents",
         "receiver_name": null,
         "caller_symbol_id": "lang_samples/php/nested.php::try_catch_finally",
@@ -1136,6 +1156,7 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   }
 }
