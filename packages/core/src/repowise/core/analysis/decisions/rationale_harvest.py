@@ -180,7 +180,8 @@ def _load(root: Path) -> dict[str, Entry]:
 
 
 def _dirty_paths(root: Path) -> set[str]:
-    out = _git(root, "diff", "--name-only", "-z")
+    # --relative: paths from *root*, as ls-files gives them when *root* is a subdirectory.
+    out = _git(root, "diff", "--name-only", "--relative", "-z")
     return set(out.decode("utf-8", "replace").split("\0")) if out else set()
 
 
@@ -193,10 +194,10 @@ def _refreshed_entries(root: Path, blobs: list[tuple[str, str]]) -> tuple[dict, 
     dirty = _dirty_paths(root)
     files: dict[str, Entry] = {}
     for path, blob in _code_paths(root, blobs):
+        if path in dirty:
+            continue
         prev = old.get(path)
-        entry = prev if prev and prev[0] == blob else None
-        if entry is None and path not in dirty:
-            entry = _harvest_file(root, path, blob)
+        entry = prev if prev and prev[0] == blob else _harvest_file(root, path, blob)
         if entry is not None:
             files[path] = entry
     return old, files

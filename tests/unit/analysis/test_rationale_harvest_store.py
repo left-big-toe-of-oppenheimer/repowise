@@ -140,3 +140,36 @@ def test_no_index_directory_writes_nothing(tmp_path):
     rh.refresh_rationale_store(repo)
 
     assert not (repo / ".repowise").exists()
+
+
+def test_stored_rows_keep_the_per_file_cap_and_strength_order(tmp_path):
+    repo = _repo(tmp_path)
+    lines = [
+        "# Kept small because the pool is shared.",
+        "# Never retry here, because the caller retries and to avoid a storm.",
+        "# Split out since the parser is slow, so it runs once.",
+        "# Cached because the lookup is slow, otherwise every call pays it.",
+        "# Ordered this way because the lock must be held first.",
+    ]
+    source = "\n".join(f"{line}\nx{i} = {i}\n" for i, line in enumerate(lines))
+    (repo / "svc" / "many.py").write_text(source, encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "many")
+    live = _both_modes(repo)
+
+    rh.refresh_rationale_store(repo)
+
+    assert _both_modes(repo) == live
+    marker = [r for r in live[0] if r["path"] == "svc/many.py"]
+    assert len(marker) == 3
+
+
+def test_a_dirty_file_in_a_subdirectory_root_is_not_stored(tmp_path):
+    _repo(tmp_path)
+    sub = tmp_path / "svc"
+    (sub / ".repowise").mkdir()
+    (sub / "client.py").write_text(_SOURCE + "# Edited, uncommitted.\n", encoding="utf-8")
+
+    rh.refresh_rationale_store(sub)
+
+    assert _store(sub)["files"] == {}
