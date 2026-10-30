@@ -2098,12 +2098,13 @@ class CallResolver(
     def _bodiless_callee_named(self, file_path: str, method_name: str) -> bool:
         """Whether a bodiless method ``_global_symbols`` leaves out can be the callee.
 
-        A Go interface method spec and a C++ pure virtual are what an
-        interface-typed receiver binds to. A C++ declaration nothing defines
-        is not, so only pure virtual names are admitted there.
+        A Go interface method spec, a Rust trait's required method and a C++
+        pure virtual are what an interface-typed receiver (or a trait default
+        body's ``self``) binds to. A C++ declaration nothing defines is not, so
+        only pure virtual names are admitted there.
         """
         language = self._language_of(file_path)
-        if language == "go":
+        if language in ("go", "rust"):
             return method_name in self._method_names()
         return language == "cpp" and method_name in self._pure_virtual_names()
 

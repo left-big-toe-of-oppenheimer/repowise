@@ -150,3 +150,17 @@ class TestSelfFieldChain:
     def test_a_type_without_the_method_resolves_nothing(self, tmp_path: Path) -> None:
         _field_repo(tmp_path, "Builder", body="self.inner.missing()")
         assert not _holder_targets(tmp_path)
+class TestTraitDefaultBody:
+    def test_self_reaches_the_traits_required_method(self, tmp_path: Path) -> None:
+        """A default body's ``self.check()`` is the trait's own bodiless ``check``."""
+        (tmp_path / "Cargo.toml").write_text('[package]\nname = "demo"\nversion = "0.1.0"\n')
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "lib.rs").write_text(
+            "pub struct Other;\n"
+            "impl Other { pub fn check(&self) -> u32 { 1 } }\n"
+            "pub trait Tr {\n"
+            "    fn check(&self) -> u32;\n"
+            "    fn twice(&self) -> u32 { self.check() }\n"
+            "}\n"
+        )
+        assert _call_targets(_build(tmp_path), "src/lib.rs::Tr::twice") == {"src/lib.rs::Tr::check"}
