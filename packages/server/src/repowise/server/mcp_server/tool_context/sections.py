@@ -159,6 +159,8 @@ def _identity_section(card: CardState) -> None:
         data["path"] = path_identity(resolved.file_path)
     if resolved.target_type == "module" and card.page is None:
         data["index_status"] = "directory_without_module_page"
+        if card.wants("full_doc"):
+            data["full_doc_basis"] = "no_module_page"
     meta = resolved.live_file_meta
     if meta is not None:
         data["index_status"] = "live_file_without_wiki_page"
