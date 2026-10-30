@@ -665,7 +665,7 @@ class ReceiverTypingMixin(
     ) -> tuple[str, str | None] | None:
         """``(declaring file, type)`` of the field *name* the nearest superclass declares.
 
-        Only where a language reads ancestors' fields (Java, Apex, C#). The
+        Only where a language reads ancestors' fields (Java, Apex, C#, TypeScript). The
         declaration scan skips a type it cannot read (``b.Reader x``,
         ``int[] x``), so the caller, its class and each superclass passed are
         also asked whether they declare the name at all: one that does hides
@@ -911,10 +911,27 @@ class ReceiverTypingMixin(
         elif language == "dart":
             hop = self._located(class_file, self._dart_getter_type_id(class_file, class_id, field))
         else:
-            hop = None
+            hop = self._inherited_hop(class_file, class_id, field, language)
         if hop is None:
             return None
         return hop[0], hop[1], max(tier, hop[2], key=_CHAIN_TIER_RANK.__getitem__)
+
+    def _inherited_hop(
+        self, class_file: str, class_id: str, field: str, language: str
+    ) -> tuple[str, str, str] | None:
+        """The class held by the field *field* an ancestor of *class_id* declares.
+
+        A base class's constructor parameter property (``protected repo: Repo``)
+        is a field of every subclass, read in the file that declares it. Ceiling:
+        a middle class's untyped redeclaration (``repo = make()``) is not seen.
+        """
+        inherited = self._inherited_field(class_file, class_id, class_id, field, language)
+        if inherited is None or inherited[1] is None:
+            return None
+        hop = self._class_named(inherited[0], inherited[1])
+        if hop is None or inherited[0] == class_file:
+            return hop
+        return hop[0], hop[1], max(hop[2], "import", key=_CHAIN_TIER_RANK.__getitem__)
 
     def _dart_getter_type_id(self, class_file: str, class_id: str, name: str) -> str | None:
         """The class the Dart getter *name* of *class_id* is declared to return.

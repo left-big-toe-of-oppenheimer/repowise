@@ -214,6 +214,41 @@ class TestTsChainedFieldCalls:
         edges = _chained(_edges(tmp_path, {"deep.ts": ("typescript", source)}))
         assert [e[:2] for e in edges] == [("deep.ts::Tree::run", "deep.ts::Leaf::go")]
 
+    @staticmethod
+    def _inherited_edges(tmp_path: Path, sub_body: str) -> set[tuple[str, str, str]]:
+        files = {
+            "base.ts": (
+                "typescript",
+                "export class Repo {\n  get(id: string) { return id; }\n}\n"
+                "export class BaseService {\n  constructor(protected repo: Repo) {}\n}\n",
+            ),
+            "sub.ts": (
+                "typescript",
+                "import { BaseService } from './base';\n"
+                "export class Other {\n  get(id: string) { return id; }\n}\n"
+                f"export class Sub extends BaseService {{\n{sub_body}\n}}\n",
+            ),
+        }
+        parsed = _parse_all(tmp_path, files)
+        resolver = CallResolver(
+            parsed,
+            {"sub.ts": {"base.ts"}, "base.ts": set()},
+            heritage_parents={"sub.ts::Sub": {"base.ts::BaseService"}},
+        )
+        return {
+            (rc.caller_id, rc.callee_id, rc.origin)
+            for rc in resolver.resolve_file("sub.ts", parsed["sub.ts"].calls)
+        }
+
+    def test_a_base_class_parameter_property_types_the_chain(self, tmp_path: Path) -> None:
+        edges = self._inherited_edges(tmp_path, "  run() { return this.repo.get('x'); }")
+        assert edges == {("sub.ts::Sub::run", "base.ts::Repo::get", "receiver_chain_import")}
+
+    def test_a_subclass_field_of_the_same_name_hides_the_base_one(self, tmp_path: Path) -> None:
+        body = "  repo: Other;\n  run() { return this.repo.get('x'); }"
+        edges = self._inherited_edges(tmp_path, body)
+        assert {callee for _, callee, _ in edges} == {"sub.ts::Other::get"}
+
 
 # --- ts_module_scope_receiver ------------------------------------------------
 

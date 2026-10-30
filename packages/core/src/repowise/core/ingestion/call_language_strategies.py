@@ -171,8 +171,11 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
         member_fallback=_TYPED_RECEIVER,
         member_bare_fallback=False,
     ),
-    # TypeScript's typed fallback also walks a dotted receiver's fields.
-    "typescript": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
+    # TypeScript's typed fallback also walks a dotted receiver's fields, an
+    # ancestor's included: a base class's constructor parameter properties.
+    "typescript": _LanguageCallStrategies(
+        member_fallback=_TYPED_RECEIVER, inherited_fields=True
+    ),
     # Rust types a local or parameter only; a `self.field` receiver is not
     # walked, since Rust has no `_CHAIN_SELF` row.
     "rust": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
